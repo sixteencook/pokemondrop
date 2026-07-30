@@ -1,0 +1,70 @@
+# =============================================================================
+# Configuration des produits surveillés.
+#
+# Champs :
+#   name           : nom lisible du produit (utilisé dans les alertes)
+#   site           : identifiant du monitor à utiliser (voir src/monitors/registry.py)
+#   url            : URL de la fiche produit — LAISSER VIDE tant que la page
+#                    n'existe pas ; le produit sera ignoré avec un avertissement.
+#   check_interval : délai entre deux vérifications, en secondes
+#   enabled        : true / false
+#
+# Les produits Pokémon 30e anniversaire ne sont pas encore publiés sur
+# Micromania : leurs URL sont volontairement vides. Il suffira de les
+# renseigner ici (et de passer enabled à true) le jour venu — aucun code
+# à modifier.
+# =============================================================================
+
+defaults:
+  check_interval: 60          # secondes, utilisé si non précisé sur le produit
+  request_timeout: 15         # secondes
+  max_retries: 3              # tentatives avant de considérer le check en échec
+  retry_backoff: 5            # secondes, doublé à chaque nouvelle tentative
+
+# `group` : clé de regroupement multi-sites. Le même produit surveillé sur
+# plusieurs sites (Micromania, Fnac…) partage le même group — c'est ce qui
+# alimentera le futur tableau comparatif du dashboard.
+
+# `priority` : low | normal | high | critical — servira à moduler la fréquence.
+# `tags`     : liste libre pour les filtres du dashboard.
+#
+# ⚠️ Depuis la migration SQLite, ce fichier n'est qu'un SEED : il est importé
+# une seule fois, au premier démarrage, si la base est vide. Ensuite, la base
+# (et bientôt le dashboard) est la source de vérité.
+
+products:
+  - name: "Pokémon 30 Ans UPC Jour"
+    site: micromania
+    group: pokemon-30-upc-jour
+    url: ""
+    check_interval: 45
+    enabled: false
+    priority: critical
+    tags: [pokemon, 30-ans, upc, collector]
+
+  - name: "Pokémon 30 Ans UPC Nuit"
+    site: micromania
+    group: pokemon-30-upc-nuit
+    url: ""
+    check_interval: 45
+    enabled: false
+    priority: critical
+    tags: [pokemon, 30-ans, upc, collector]
+
+  - name: "Pokémon 30 Ans ETB"
+    site: micromania
+    group: pokemon-30-etb
+    url: ""
+    check_interval: 60
+    enabled: false
+    priority: high
+    tags: [pokemon, 30-ans, etb]
+
+  - name: "Pokémon 30 Ans Bundle"
+    site: micromania
+    group: pokemon-30-bundle
+    url: ""
+    check_interval: 60
+    enabled: false
+    priority: high
+    tags: [pokemon, 30-ans, bundle]

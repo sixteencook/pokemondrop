@@ -1,0 +1,18 @@
+# Secrets
+.env
+
+# État, logs et captures générés
+data/
+logs/
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,56 @@
+# Drop Monitor — déploiement local ou sur un serveur.
+#
+#   cp .env.example .env    (puis renseigner les valeurs)
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# Le dashboard est alors sur http://localhost:8000
+
+services:
+  drop-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: drop-monitor:latest
+    container_name: drop-monitor
+    restart: unless-stopped
+
+    # Secrets et réglages : voir .env.example
+    env_file:
+      - .env
+
+    environment:
+      PORT: 8000
+      DATA_DIR: /data
+      LOG_DIR: /data/logs
+      SCREENSHOTS_DIR: /data/screenshots
+      # Chromium consomme ~200 Mo par capture : 1 seule à la fois par défaut.
+      SCREENSHOT_MAX_CONCURRENT: 1
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      # Persistance : base SQLite, captures d'écran et fichiers de logs.
+      - drop-monitor-data:/data
+
+    # Chromium a besoin d'un /dev/shm plus large que le défaut Docker (64 Mo),
+    # sans quoi les captures de pages lourdes échouent.
+    shm_size: "512mb"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  drop-monitor-data:
+    name: drop-monitor-data

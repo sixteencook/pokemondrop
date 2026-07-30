@@ -1,0 +1,28 @@
+# Secrets — les variables sont fournies par Railway / docker-compose
+.env
+
+# Données locales (le conteneur utilise le volume /data)
+data/
+logs/
+screenshots/
+
+# Frontend : reconstruit dans l'étape de build
+frontend/node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Développement
+tests/
+requirements-dev.txt
+.git/
+.gitignore
+.claude/
+*.md
+!README.md

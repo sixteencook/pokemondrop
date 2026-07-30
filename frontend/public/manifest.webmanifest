@@ -1,0 +1,26 @@
+{
+  "name": "Drop Monitor",
+  "short_name": "DropMon",
+  "description": "Surveillance de disponibilité produits — précommandes, retours en stock, alertes en temps réel.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
