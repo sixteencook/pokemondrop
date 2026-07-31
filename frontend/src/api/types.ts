@@ -245,6 +245,46 @@ export interface MatchSuggestion {
   created_at: string;
 }
 
+export interface IdentityFieldEntry {
+  field: string;
+  value: string;
+  confidence: number;
+  source: string;
+}
+
+export interface ProductIdentity {
+  fields: IdentityFieldEntry[];
+  aliases: string[];
+  additional_images: string[];
+  search_keys: string[];
+}
+
+export interface SearchAttempt {
+  id: number;
+  site: string;
+  key_kind: string;
+  key_value: string;
+  status: "found" | "not_found" | "error" | "unsupported" | "pending";
+  attempts: number;
+  confidence: number;
+  matched_fields: string[];
+  reason: string;
+  found_url: string | null;
+  first_attempt_at: string;
+  last_attempt_at: string;
+  next_retry_at: string | null;
+}
+
+export interface CrossSiteReport {
+  sites_queried: number;
+  keys_tried: number;
+  candidates_found: number;
+  offers_created: number;
+  retries_scheduled: number;
+  errors: string[];
+  summary: string;
+}
+
 export interface CatalogState {
   enabled: boolean;
   merge_threshold: number;
@@ -255,6 +295,8 @@ export interface CatalogState {
   pending_suggestions: number;
   methods: string[];
   search_capable_sites: string[];
+  identity_strategies: string[];
+  pending_retries: number;
 }
 
 export interface Monitor {

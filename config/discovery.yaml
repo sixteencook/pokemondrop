@@ -77,10 +77,29 @@ intelligence:
   # PROPOSÉ dans le dashboard au lieu d'être appliqué.
   suggestion_floor: 70
 
-  # Interroger les autres marchands pour retrouver le même produit.
+  # --- Recherche inter-sites multi-clés --------------------------------
+  # Chaque information découverte (EAN, UPC, MPN, SKU, ASIN, modèle, nom)
+  # devient une clé de recherche chez TOUS les autres marchands.
   # Nécessite qu'un plugin sache chercher (search_url_template ci-dessous).
   cross_site_search: false
-  cross_site_max_sites: 6
+  cross_site_max_sites: 8
+
+  # Nombre de clés essayées par site, de la plus discriminante à la moins.
+  max_keys_per_site: 6
+
+  # Confiance à partir de laquelle un site cesse d'essayer d'autres clés.
+  stop_confidence: 90
+  site_timeout: 30
+
+  # --- Relance des recherches infructueuses ----------------------------
+  # Si un marchand ne connaît pas encore le produit, l'échec est mémorisé
+  # et retenté automatiquement. C'est ce qui permet de repérer une fiche
+  # publiée plusieurs heures après les autres, sans repartir de zéro.
+  retry_base_seconds: 1800      # premier réessai après 30 min
+  retry_multiplier: 1.5         # puis 45 min, 1 h 07, 1 h 41…
+  retry_cap_seconds: 21600      # plafonné à 6 h
+  retry_interval: 300           # cadence de vérification de la file
+  retry_batch: 25               # relances traitées par passage
 
 # --- Configuration par site ---------------------------------------------------
 # Chaque bloc est transmis tel quel au plugin du site : le moteur n'en

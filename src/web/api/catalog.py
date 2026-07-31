@@ -12,10 +12,13 @@ from src.web.schemas import Page, PageParams, SortParams, page_params, sort_para
 from src.web.schemas.catalog import (
     CatalogProductOut,
     CatalogStatusOut,
+    CrossSiteReportOut,
     ManualProductIn,
     MatchSuggestionOut,
     OfferHistoryOut,
     OfferOut,
+    ProductIdentityOut,
+    SearchAttemptOut,
 )
 from src.web.state import AppContext
 
@@ -99,6 +102,39 @@ async def offer_history(
 
 
 @router.get(
+    "/products/{product_uuid}/identity",
+    response_model=ProductIdentityOut,
+    summary="Profil d'identité",
+    description="Toutes les informations connues du produit, avec la "
+                "confiance et la source de chacune, plus la liste des "
+                "recherches possibles par pouvoir discriminant.",
+)
+async def product_identity(
+    product_uuid: str, ctx: AppContext = Depends(get_ctx)
+) -> ProductIdentityOut:
+    product = await _product_or_404(ctx, product_uuid)
+    return ProductIdentityOut.from_domain(product.identity)
+
+
+@router.get(
+    "/products/{product_uuid}/search-attempts",
+    response_model=list[SearchAttemptOut],
+    summary="Historique des recherches",
+    description="Ce qui a été cherché, chez qui, avec quelle clé et avec "
+                "quel résultat — y compris les échecs, avec l'heure de leur "
+                "prochaine relance automatique.",
+)
+async def product_search_attempts(
+    product_uuid: str, ctx: AppContext = Depends(get_ctx)
+) -> list[SearchAttemptOut]:
+    await _product_or_404(ctx, product_uuid)
+    return [
+        SearchAttemptOut.from_domain(attempt)
+        for attempt in await ctx.attempts.for_product(product_uuid)
+    ]
+
+
+@router.get(
     "/status",
     response_model=CatalogStatusOut,
     summary="État de l'intelligence produit",
@@ -107,18 +143,20 @@ async def catalog_status(ctx: AppContext = Depends(get_ctx)) -> CatalogStatusOut
     engine = ctx.intelligence
     settings = ctx.intelligence_settings
     suggestions = await ctx.catalog.list_suggestions()
+    crosssite = getattr(engine, "_crosssite", None) if engine else None
+    strategies = getattr(engine, "_strategies", None) if engine else None
     return CatalogStatusOut(
         enabled=bool(engine and engine.enabled),
         merge_threshold=settings.merge_threshold,
         suggestion_floor=settings.suggestion_floor,
-        cross_site_search=settings.cross_site_search,
+        cross_site_search=bool(crosssite and crosssite.enabled),
         products=await ctx.catalog.count(),
         offers=await ctx.offers.count(),
         pending_suggestions=len(suggestions),
         methods=engine.methods if engine else [],
-        search_capable_sites=(
-            engine._search.capable_sites if engine and engine._search else []
-        ),
+        search_capable_sites=crosssite.capable_sites if crosssite else [],
+        identity_strategies=strategies.names if strategies else [],
+        pending_retries=await ctx.attempts.pending_retries(),
     )
 
 
@@ -201,19 +239,24 @@ async def reject_suggestion(
 )
 async def find_offers(
     product_uuid: str, ctx: AppContext = Depends(get_ctx)
-) -> list[OfferOut]:
+) -> CrossSiteReportOut:
     await _product_or_404(ctx, product_uuid)
-    if ctx.intelligence is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
-                            detail="Intelligence produit indisponible.")
-    if not ctx.intelligence_settings.cross_site_search:
+    crosssite = getattr(ctx.intelligence, "_crosssite", None)
+    if ctx.intelligence is None or crosssite is None or not crosssite.enabled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Recherche inter-sites désactivée (intelligence."
-                   "cross_site_search dans config/discovery.yaml).",
+                   "cross_site_search dans config/discovery.yaml), ou aucun "
+                   "plugin ne sait chercher.",
         )
-    created = await ctx.intelligence.find_across_sites(product_uuid)
-    return [OfferOut.from_domain(offer) for offer in created]
+    _, report = await ctx.intelligence.find_across_sites(product_uuid)
+    return CrossSiteReportOut(
+        sites_queried=report.sites_queried, keys_tried=report.keys_tried,
+        candidates_found=report.candidates_found,
+        offers_created=report.offers_created,
+        retries_scheduled=report.retries_scheduled,
+        errors=report.errors, summary=report.summary(),
+    )
 
 
 @router.post(

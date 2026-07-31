@@ -27,6 +27,7 @@ from src.intelligence.entities import (
     ProductDraft,
     ProductIdentifiers,
 )
+from src.intelligence.identity import ProductIdentity
 from src.intelligence.naming import name_key
 from src.models import Priority
 from src.repositories.pagination import apply_sort, fetch_page
@@ -59,7 +60,34 @@ def _product_to_domain(row: CatalogProductRow) -> CanonicalProduct:
         priority=Priority(row.priority),
         created_at=row.created_at,
         updated_at=row.updated_at,
+        identity=_load_identity(row),
     )
+
+
+def _load_identity(row: CatalogProductRow) -> ProductIdentity:
+    """Profil d'identité stocké, complété par les colonnes indexées.
+
+    Les colonnes restent la source de vérité du matching SQL ; le JSON
+    porte les confiances, les sources, les alias et les images.
+    """
+    try:
+        identity = ProductIdentity.from_dict(json.loads(row.identity or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        identity = ProductIdentity()
+
+    for name, value in (
+        ("ean", row.ean), ("upc", row.upc), ("isbn", row.isbn),
+        ("mpn", row.mpn), ("sku", row.manufacturer_sku),
+        ("manufacturer_part_number", row.manufacturer_ref),
+        ("asin", row.asin), ("model_number", row.model_number),
+        ("brand", row.brand), ("manufacturer", row.manufacturer),
+        ("collection", row.collection), ("edition", row.edition),
+        ("release_date", row.release_date), ("primary_image", row.image_url),
+        ("canonical_name", row.name),
+    ):
+        if value and not identity.get(name):
+            identity = identity.with_field(name, value, 100, "base")
+    return identity
 
 
 def _offer_to_domain(row: OfferRow) -> Offer:
@@ -100,6 +128,10 @@ class CatalogRepository:
                 isbn=draft.identifiers.isbn, mpn=draft.identifiers.mpn,
                 manufacturer_sku=draft.identifiers.manufacturer_sku,
                 manufacturer_ref=draft.identifiers.manufacturer_ref,
+                asin=draft.identity.asin,
+                model_number=draft.identity.model_number,
+                manufacturer=draft.identity.manufacturer,
+                identity=json.dumps(draft.identity.to_dict(), ensure_ascii=False),
                 tags=json.dumps(list(draft.tags), ensure_ascii=False),
                 priority=draft.priority.value,
             ))
@@ -126,9 +158,18 @@ class CatalogRepository:
                 ("category", draft.attributes.category),
                 ("release_date", draft.attributes.release_date),
                 ("image_url", draft.attributes.image_url),
+                ("asin", draft.identity.asin),
+                ("model_number", draft.identity.model_number),
+                ("manufacturer", draft.identity.manufacturer),
             ):
                 if value and not getattr(row, attribute):
                     setattr(row, attribute, value)
+
+            # Le profil d'identité fusionne : chaque champ garde la meilleure
+            # confiance, et les alias s'accumulent.
+            if not draft.identity.is_empty:
+                merged = _load_identity(row).merged_with(draft.identity)
+                row.identity = json.dumps(merged.to_dict(), ensure_ascii=False)
 
             if draft.tags:
                 merged = dict.fromkeys([*json.loads(row.tags or "[]"), *draft.tags])
@@ -153,6 +194,14 @@ class CatalogRepository:
             (CatalogProductRow.mpn, identifiers.mpn),
             (CatalogProductRow.manufacturer_sku, identifiers.manufacturer_sku),
             (CatalogProductRow.manufacturer_ref, identifiers.manufacturer_ref),
+        ):
+            if value:
+                conditions.append(column == value)
+
+        # Clés d'identité v2 : ASIN et numéro de modèle.
+        for column, value in (
+            (CatalogProductRow.asin, draft.identity.asin),
+            (CatalogProductRow.model_number, draft.identity.model_number),
         ):
             if value:
                 conditions.append(column == value)

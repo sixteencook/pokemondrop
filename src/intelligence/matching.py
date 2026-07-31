@@ -8,11 +8,14 @@ règle codée en dur dans le moteur.
      98  UPC identique
      96  ISBN identique
      95  MPN identique
+     93  ASIN identique
      92  SKU constructeur identique
      90  Référence constructeur identique
+     88  Numéro de modèle identique
      85  Nom normalisé + marque
      80  Nom + date de sortie
      75  Nom + collection
+     70  Nom normalisé seul
 
 AJOUTER UNE MÉTHODE PLUS TARD (OCR, embeddings, similarité visuelle,
 recherche inversée d'image, comparaison de packaging) revient à écrire une
@@ -75,6 +78,34 @@ class _IdentifierStrategy:
             return None
         for product in candidates:
             if getattr(product.identifiers, self._attribute, None) == value:
+                return MatchResult(
+                    product=product, score=self.score, method=self.name,
+                    reason=f"{self._label} identique ({value})",
+                )
+        return None
+
+
+class _IdentityFieldStrategy:
+    """Égalité stricte sur un champ du profil d'identité v2.
+
+    Couvre les clés qui n'existent pas dans `identifiers` : ASIN, numéro de
+    modèle, et toute clé ajoutée plus tard — il suffit de nommer le champ.
+    """
+
+    def __init__(self, name: str, score: int, field: str, label: str) -> None:
+        self.name = name
+        self.score = score
+        self._field = field
+        self._label = label
+
+    async def find(
+        self, draft: ProductDraft, candidates: Sequence[CanonicalProduct]
+    ) -> Optional[MatchResult]:
+        value = draft.identity.get(self._field)
+        if not value:
+            return None
+        for product in candidates:
+            if product.identity.get(self._field) == value:
                 return MatchResult(
                     product=product, score=self.score, method=self.name,
                     reason=f"{self._label} identique ({value})",
@@ -182,10 +213,13 @@ def default_strategies() -> list[MatchStrategy]:
         _IdentifierStrategy("upc", 98, "upc", "UPC"),
         _IdentifierStrategy("isbn", 96, "isbn", "ISBN"),
         _IdentifierStrategy("mpn", 95, "mpn", "MPN"),
+        _IdentityFieldStrategy("asin", 93, "asin", "ASIN"),
         _IdentifierStrategy("manufacturer_sku", 92, "manufacturer_sku",
                             "SKU constructeur"),
         _IdentifierStrategy("manufacturer_ref", 90, "manufacturer_ref",
                             "référence constructeur"),
+        _IdentityFieldStrategy("model_number", 88, "model_number",
+                               "numéro de modèle"),
         NameBrandStrategy(),
         NameReleaseDateStrategy(),
         NameCollectionStrategy(),

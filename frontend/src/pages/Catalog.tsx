@@ -33,6 +33,7 @@ import {
   useToast,
 } from "@/components/ui";
 import { OfferTable } from "@/components/domain/OfferTable";
+import { ProductIdentityPanel } from "@/components/domain/ProductIdentityPanel";
 import { formatTimeAgo } from "@/lib/format";
 import { ApiError } from "@/api/client";
 import { useWsEvent } from "@/ws/WsProvider";
@@ -91,12 +92,13 @@ export default function CatalogPage() {
 
   const findOffers = useMutation({
     mutationFn: (uuid: string) => catalogApi.findOffers(uuid),
-    onSuccess: (created) => {
+    onSuccess: (report) => {
       push({
-        tone: created.length ? "success" : "info",
-        title: created.length
-          ? `${created.length} nouvelle(s) offre(s)`
+        tone: report.offers_created ? "success" : "info",
+        title: report.offers_created
+          ? `${report.offers_created} nouvelle(s) offre(s)`
           : "Aucune autre offre trouvée",
+        description: report.summary,
       });
       invalidate();
     },
@@ -141,9 +143,13 @@ export default function CatalogPage() {
                   hint="toutes enseignes" />
         <StatCard label="Fusions à valider" tone="warning" icon={<GitMerge size={16} />}
                   value={state.data?.pending_suggestions ?? 0} />
-        <StatCard label="Recherche inter-sites" tone="neutral" icon={<Radar size={16} />}
-                  value={state.data?.cross_site_search ? "Active" : "Inactive"}
-                  hint={state.data?.search_capable_sites.join(", ") || "aucun site"} />
+        <StatCard label="Recherches en relance" tone="info" icon={<Radar size={16} />}
+                  value={state.data?.pending_retries ?? 0}
+                  hint={
+                    state.data?.cross_site_search
+                      ? state.data.search_capable_sites.join(", ") || "aucun site"
+                      : "recherche inter-sites inactive"
+                  } />
       </div>
 
       {/* File de validation des rapprochements */}
@@ -257,6 +263,9 @@ export default function CatalogPage() {
 
                   {open && (
                     <div className="border-t border-border px-3 pb-3">
+                      <div className="py-3">
+                        <ProductIdentityPanel productUuid={product.uuid} />
+                      </div>
                       <OfferTable offers={product.offers}
                                   bestSite={product.best_offer_site} />
                       <div className="mt-2 flex justify-end">

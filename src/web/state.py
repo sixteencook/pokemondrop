@@ -33,6 +33,7 @@ from src.repositories import (
     SnapshotRepository,
     TimelineRepository,
 )
+from src.repositories.search_attempts import SearchAttemptRepository
 from src.services import ScreenshotService, StatsService
 from src.web.ws import WsHub
 
@@ -55,6 +56,7 @@ class AppContext:
     discoveries: DiscoveryRepository
     catalog: CatalogRepository
     offers: OfferRepository
+    attempts: SearchAttemptRepository
     stats: StatsService
     screenshots: ScreenshotService
     discovery_settings: DiscoverySettings
@@ -62,6 +64,7 @@ class AppContext:
     base_dir: Path
     discovery_engine: Optional[DiscoveryEngine] = None
     discovery_task: Optional[object] = None
+    retry_task: Optional[object] = None
     intelligence: Optional[ProductIntelligenceEngine] = None
     hub: WsHub = field(default_factory=WsHub)
     loop: Optional[asyncio.AbstractEventLoop] = None

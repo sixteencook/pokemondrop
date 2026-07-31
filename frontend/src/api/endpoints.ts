@@ -9,14 +9,16 @@ import type {
   Check,
   CheckNowResult,
   ChecksPerHourPoint,
+  CrossSiteReport,
   Discovery,
   DiscoveryState,
   LogEntry,
   MatchSuggestion,
   Monitor,
-  Offer,
   OfferHistoryEntry,
+  ProductIdentity,
   ScanReport,
+  SearchAttempt,
   Page,
   Product,
   ProductInput,
@@ -65,7 +67,11 @@ export const catalogApi = {
   rejectSuggestion: (id: number) =>
     http.post<void>(`/catalog/suggestions/${id}/reject`),
   findOffers: (uuid: string) =>
-    http.post<Offer[]>(`/catalog/products/${uuid}/find-offers`),
+    http.post<CrossSiteReport>(`/catalog/products/${uuid}/find-offers`),
+  identity: (uuid: string) =>
+    http.get<ProductIdentity>(`/catalog/products/${uuid}/identity`),
+  searchAttempts: (uuid: string) =>
+    http.get<SearchAttempt[]>(`/catalog/products/${uuid}/search-attempts`),
 };
 
 export const discoveriesApi = {

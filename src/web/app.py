@@ -31,11 +31,14 @@ from src.models import GlobalSettings
 from src.monitors import create_registry
 from src.notifications import NotificationManager, TelegramNotifier
 from src.intelligence import (
-    CrossSiteSearchCoordinator,
+    CrossSiteIntelligence,
     OfferSyncService,
     ProductIntelligenceEngine,
+    discover_identity_strategies,
     load_intelligence_settings,
 )
+from src.intelligence.config import load_crosssite_settings
+from src.repositories.search_attempts import SearchAttemptRepository
 from src.repositories import (
     AlertRepository,
     CatalogRepository,
@@ -117,6 +120,7 @@ async def _build_context(
     discoveries = DiscoveryRepository(db.session_factory)
     catalog = CatalogRepository(db.session_factory)
     offers = OfferRepository(db.session_factory)
+    attempts = SearchAttemptRepository(db.session_factory)
 
     if yaml_products:
         await import_products_from_yaml(products, yaml_products)
@@ -183,13 +187,22 @@ async def _build_context(
 
     # --- Product Intelligence Engine (additive elle aussi) --------------
     intelligence_settings = load_intelligence_settings(discovery_config)
+    crosssite_settings = load_crosssite_settings(discovery_config)
+    crosssite = CrossSiteIntelligence(
+        crosssite_settings, discovery_registry, attempts, make_context
+    )
     intelligence = ProductIntelligenceEngine(
         intelligence_settings, catalog, offers, products, bus,
-        search=CrossSiteSearchCoordinator(
-            discovery_registry, make_context,
-            max_sites=intelligence_settings.cross_site_max_sites,
-        ),
+        crosssite=crosssite,
+        strategies=discover_identity_strategies(),
+        attempts=attempts,
     )
+    if crosssite.enabled:
+        log.ok(
+            "Recherche inter-sites multi-clés active — %d site(s) capable(s), "
+            "relance des échecs toutes les %d min.",
+            len(crosssite.capable_sites), crosssite_settings.retry_base_seconds // 60,
+        )
     OfferSyncService(offers).attach_to(bus)
 
     discovery_engine = DiscoveryEngine(
@@ -203,7 +216,7 @@ async def _build_context(
         registry=registry, engine=engine, notifications=notifications,
         products=products, snapshots=snapshots, checks=checks,
         timeline=timeline, alerts=alerts, discoveries=discoveries,
-        catalog=catalog, offers=offers,
+        catalog=catalog, offers=offers, attempts=attempts,
         stats=None,  # type: ignore[arg-type] — posé juste en dessous
         screenshots=screenshots,
         discovery_settings=discovery_settings,
@@ -284,13 +297,20 @@ def create_app(
                 ctx.discovery_task = asyncio.create_task(
                     ctx.discovery_engine.run(), name="discovery-engine"
                 )
+            if ctx.intelligence is not None:
+                # Relance des recherches restées infructueuses.
+                ctx.retry_task = asyncio.create_task(
+                    ctx.intelligence.run_retry_loop(), name="cross-site-retry"
+                )
         try:
             yield
         finally:
             ctx.engine.stop()
             if ctx.discovery_engine is not None:
                 ctx.discovery_engine.stop()
-            for task in (ctx.engine_task, ctx.discovery_task):
+            if ctx.intelligence is not None:
+                ctx.intelligence.stop()
+            for task in (ctx.engine_task, ctx.discovery_task, ctx.retry_task):
                 if task is None:
                     continue
                 task.cancel()

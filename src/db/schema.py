@@ -11,7 +11,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -165,6 +172,14 @@ class CatalogProductRow(Base):
         String(100), nullable=True, index=True
     )
     manufacturer_ref: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # --- Identité v2 : clés supplémentaires, indexées pour le matching ---
+    asin: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    model_number: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+    manufacturer: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    #: Profil d'identité complet (valeurs, confiances, sources, alias, images).
+    identity: Mapped[str] = mapped_column(Text, default="{}")
     tags: Mapped[str] = mapped_column(Text, default="[]")
     priority: Mapped[str] = mapped_column(String(20), default="normal")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -221,6 +236,50 @@ class OfferHistoryRow(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class SearchAttemptRow(Base):
+    """Mémoire des recherches inter-sites — succès ET échecs.
+
+    Une ligne par (produit, site, clé). C'est à la fois :
+
+      - l'HISTORIQUE, qui explique pourquoi un rapprochement a été fait ;
+      - la LISTE DE RELANCE : une recherche infructueuse conserve un
+        `next_retry_at`, et sera retentée jusqu'à ce que la fiche
+        apparaisse. Pour un drop, c'est ce qui permet de détecter une page
+        publiée quelques heures après les autres, sans repartir de zéro.
+    """
+
+    __tablename__ = "search_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    product_uuid: Mapped[str] = mapped_column(String(32), index=True)
+    site: Mapped[str] = mapped_column(String(50), index=True)
+    key_kind: Mapped[str] = mapped_column(String(40))
+    key_value: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    matched_fields: Mapped[str] = mapped_column(Text, default="[]")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    found_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    offer_uuid: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    first_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    last_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "product_uuid", "site", "key_kind", "key_value",
+            name="uq_search_attempt",
+        ),
     )
 
 

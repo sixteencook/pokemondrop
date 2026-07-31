@@ -161,6 +161,89 @@ class MatchSuggestionOut(BaseModel):
         )
 
 
+class IdentityFieldOut(BaseModel):
+    """Une information d'identité, sa confiance et sa source."""
+
+    field: str
+    value: str
+    confidence: int
+    source: str = Field(description="Marchand ou stratégie qui l'a fournie")
+
+
+class ProductIdentityOut(BaseModel):
+    """Profil d'identité complet d'un produit."""
+
+    fields: list[IdentityFieldOut]
+    aliases: list[str] = Field(description="Autres titres vus chez les marchands")
+    additional_images: list[str]
+    search_keys: list[str] = Field(
+        description="Recherches possibles, par pouvoir discriminant décroissant"
+    )
+
+    @classmethod
+    def from_domain(cls, identity) -> "ProductIdentityOut":
+        from src.intelligence.keys import build_search_keys
+
+        return cls(
+            fields=[
+                IdentityFieldOut(field=name, value=entry.value,
+                                 confidence=entry.confidence, source=entry.source)
+                for name, entry in sorted(
+                    identity.fields.items(),
+                    key=lambda item: item[1].confidence, reverse=True
+                )
+            ],
+            aliases=list(identity.aliases),
+            additional_images=list(identity.additional_images),
+            search_keys=[str(key) for key in build_search_keys(identity)],
+        )
+
+
+class SearchAttemptOut(BaseModel):
+    """Une recherche tentée chez un marchand — succès ou échec."""
+
+    id: int
+    site: str
+    key_kind: str
+    key_value: str
+    status: str = Field(description="found | not_found | error | unsupported")
+    attempts: int
+    confidence: int
+    matched_fields: list[str]
+    reason: str
+    found_url: Optional[str]
+    first_attempt_at: datetime
+    last_attempt_at: datetime
+    next_retry_at: Optional[datetime] = Field(
+        None, description="Heure de la prochaine relance automatique"
+    )
+
+    @classmethod
+    def from_domain(cls, attempt) -> "SearchAttemptOut":
+        return cls(
+            id=attempt.id, site=attempt.site, key_kind=attempt.key_kind,
+            key_value=attempt.key_value, status=attempt.status,
+            attempts=attempt.attempts, confidence=attempt.confidence,
+            matched_fields=list(attempt.matched_fields), reason=attempt.reason,
+            found_url=attempt.found_url,
+            first_attempt_at=attempt.first_attempt_at,
+            last_attempt_at=attempt.last_attempt_at,
+            next_retry_at=attempt.next_retry_at,
+        )
+
+
+class CrossSiteReportOut(BaseModel):
+    """Bilan d'une campagne de recherche multi-clés."""
+
+    sites_queried: int
+    keys_tried: int
+    candidates_found: int
+    offers_created: int
+    retries_scheduled: int
+    errors: list[str]
+    summary: str
+
+
 class CatalogStatusOut(BaseModel):
     """État de la couche d'intelligence produit."""
 
@@ -173,6 +256,13 @@ class CatalogStatusOut(BaseModel):
     pending_suggestions: int
     methods: list[str] = Field(description="Méthodes de corrélation, par confiance")
     search_capable_sites: list[str]
+    identity_strategies: list[str] = Field(
+        default_factory=list,
+        description="Stratégies d'enrichissement d'identité chargées",
+    )
+    pending_retries: int = Field(
+        0, description="Recherches infructueuses en attente de relance"
+    )
 
 
 class ManualProductIn(BaseModel):

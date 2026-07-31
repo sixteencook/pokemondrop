@@ -44,6 +44,20 @@ class IntelligenceSettings:
         )
 
 
+def load_crosssite_settings(path: Path):
+    """Réglages de la recherche inter-sites (même section `intelligence`)."""
+    from src.intelligence.crosssite import CrossSiteSettings
+
+    if not path.exists():
+        return CrossSiteSettings()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return CrossSiteSettings.from_config(raw.get("intelligence"))
+    except (yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
+        log.error("Réglages inter-sites invalides (%s) — valeurs par défaut.", exc)
+        return CrossSiteSettings()
+
+
 def load_intelligence_settings(path: Path) -> IntelligenceSettings:
     """Lit la section `intelligence` du YAML de découverte."""
     if not path.exists():

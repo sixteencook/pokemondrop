@@ -39,13 +39,17 @@ from src.intelligence.entities import (
     ProductDraft,
     ProductIdentifiers,
 )
+from src.intelligence.crosssite import CrossSiteIntelligence, CrossSiteReport
+from src.intelligence.identity import ProductIdentity
 from src.intelligence.matching import MatchingEngine, MatchResult
 from src.intelligence.search import CrossSiteSearchCoordinator, SearchQuery
+from src.intelligence.strategies import IdentityContext, IdentityStrategyRegistry
 from src.models import Priority
 from src.utils.logger import get_logger
 
 if TYPE_CHECKING:  # import différé : évite le cycle repositories ↔ intelligence
     from src.repositories import CatalogRepository, OfferRepository, ProductRepository
+    from src.repositories.search_attempts import SearchAttemptRepository
 
 log = get_logger("intelligence")
 
@@ -88,6 +92,9 @@ class ProductIntelligenceEngine:
         bus: EventBus,
         matching: Optional[MatchingEngine] = None,
         search: Optional[CrossSiteSearchCoordinator] = None,
+        crosssite: Optional["CrossSiteIntelligence"] = None,
+        strategies: Optional["IdentityStrategyRegistry"] = None,
+        attempts: Optional["SearchAttemptRepository"] = None,
     ) -> None:
         self._settings = settings
         self._catalog = catalog
@@ -96,6 +103,9 @@ class ProductIntelligenceEngine:
         self._bus = bus
         self._matching = matching or MatchingEngine()
         self._search = search
+        self._crosssite = crosssite
+        self._strategies = strategies
+        self._attempts = attempts
 
     @property
     def enabled(self) -> bool:
@@ -117,9 +127,16 @@ class ProductIntelligenceEngine:
         monitored_uuid: Optional[str] = None,
         fingerprint: Optional[str] = None,
         source: str = "discovery",
+        html: Optional[str] = None,
+        identity: Optional[ProductIdentity] = None,
     ) -> IngestOutcome:
-        """Rattache une fiche marchande au bon produit, ou en crée un."""
+        """Rattache une fiche marchande au bon produit, ou en crée un.
+
+        `html` permet aux stratégies d'identité (données structurées, et
+        demain OCR ou vision) d'extraire davantage de clés.
+        """
         draft = self._to_draft(discovered, identifiers, attributes)
+        draft = await self._enrich_identity(draft, discovered, html, identity)
         candidates = await self._catalog.candidates_for(draft)
         match = await self._matching.match(draft, candidates)
 
@@ -221,6 +238,49 @@ class ProductIntelligenceEngine:
             priority=Priority.NORMAL,
         )
 
+    async def _enrich_identity(
+        self,
+        draft: ProductDraft,
+        discovered: DiscoveredProduct,
+        html: Optional[str],
+        provided: Optional[ProductIdentity],
+    ) -> ProductDraft:
+        """Construit le profil d'identité et le fait passer par les stratégies.
+
+        Toute information extraite ici devient une clé de recherche pour
+        TOUS les autres marchands.
+        """
+        from dataclasses import replace as _replace
+
+        identity = provided or ProductIdentity()
+        site = discovered.site or "inconnu"
+
+        # Ce que le brouillon sait déjà, converti en champs d'identité.
+        for name, value, confidence in (
+            ("ean", draft.identifiers.ean, 100),
+            ("upc", draft.identifiers.upc, 100),
+            ("isbn", draft.identifiers.isbn, 100),
+            ("mpn", draft.identifiers.mpn, 95),
+            ("sku", draft.identifiers.manufacturer_sku, 92),
+            ("manufacturer_part_number", draft.identifiers.manufacturer_ref, 90),
+            ("brand", draft.attributes.brand, 90),
+            ("collection", draft.attributes.collection, 80),
+            ("edition", draft.attributes.edition, 80),
+            ("release_date", draft.attributes.release_date, 90),
+            ("primary_image", draft.attributes.image_url, 85),
+            ("canonical_name", draft.name, 70),
+        ):
+            identity = identity.with_field(name, value, confidence, site)
+        identity = identity.with_alias(draft.name)
+
+        if self._strategies is not None and len(self._strategies):
+            identity = await self._strategies.enrich(identity, IdentityContext(
+                site=site, url=discovered.url, title=discovered.title,
+                html=html, image_url=discovered.image_url,
+            ))
+
+        return _replace(draft, identity=identity)
+
     # ------------------------------------------------------------------ #
     # Fusion manuelle                                                     #
     # ------------------------------------------------------------------ #
@@ -254,34 +314,136 @@ class ProductIntelligenceEngine:
     # Recherche inter-sites                                               #
     # ------------------------------------------------------------------ #
 
-    async def find_across_sites(self, product_uuid: str) -> list[Offer]:
-        """Cherche le produit chez les autres marchands et crée les offres.
+    async def find_across_sites(
+        self, product_uuid: str, only_sites: Optional[list[str]] = None
+    ) -> tuple[list[Offer], Optional[CrossSiteReport]]:
+        """Cherche le produit partout, avec TOUTES les clés de son identité.
 
-        Ne fait rien si la recherche inter-sites est désactivée ou si aucun
-        plugin ne sait chercher — sans jamais lever.
+        Chaque information découverte en chemin enrichit le produit et
+        devient une clé pour les recherches suivantes. Les échecs sont
+        mémorisés et reprogrammés — jamais perdus.
         """
-        if not self._settings.cross_site_search or self._search is None:
-            return []
+        if self._crosssite is None or not self._crosssite.enabled:
+            return [], None
 
         product = await self._catalog.get(product_uuid)
         if product is None:
-            return []
+            return [], None
 
-        known_sites = {offer.site for offer in await self._offers.for_product(product_uuid)}
-        results = await self._search.search(
-            SearchQuery.from_product(product), exclude_sites=tuple(known_sites)
+        known_sites = {
+            offer.site for offer in await self._offers.for_product(product_uuid)
+        }
+        candidates, report = await self._crosssite.search_everywhere(
+            product_uuid, product.identity,
+            exclude_sites=tuple(known_sites), only_sites=only_sites,
         )
 
-        created: list[Offer] = []
-        for result in results:
-            for found in result.products:
-                outcome = await self.ingest(found, source="cross_site_search")
-                if outcome.created_offer:
-                    created.append(outcome.offer)
+        created = await self._ingest_candidates(candidates, product)
+        report.offers_created = len(created)
 
         if created:
             log.ok(
-                "Recherche inter-sites : %d nouvelle(s) offre(s) pour « %s ».",
-                len(created), product.name,
+                "Recherche inter-sites : %d nouvelle(s) offre(s) pour « %s » — %s",
+                len(created), product.name, report.summary(),
             )
+        return created, report
+
+    async def _ingest_candidates(self, candidates, product=None) -> list[Offer]:
+        """Ingère les candidats trouvés ; leurs indices enrichissent l'identité.
+
+        Un candidat obtenu EN CHERCHANT ce produit précis n'a pas à repasser
+        par une corrélation à l'aveugle : on sait déjà à qui il appartient.
+        Au-dessus du seuil de confiance, l'offre lui est donc rattachée
+        directement — sinon on retombe sur l'ingestion normale, qui pourra
+        proposer une fusion.
+        """
+        created: list[Offer] = []
+        for candidate in candidates:
+            confident = (
+                product is not None
+                and candidate.confidence >= self._settings.merge_threshold
+            )
+            if confident:
+                offer = await self._attach_candidate(candidate, product)
+                if offer is not None:
+                    created.append(offer)
+                continue
+
+            outcome = await self.ingest(
+                candidate.to_discovered(),
+                identity=candidate.identity_hints,
+                source="cross_site_search",
+            )
+            if outcome.created_offer:
+                created.append(outcome.offer)
         return created
+
+    async def _attach_candidate(self, candidate, product) -> Optional[Offer]:
+        """Rattache une offre au produit cherché et l'enrichit au passage."""
+        if not candidate.identity_hints.is_empty:
+            await self._catalog.enrich(product.uuid, ProductDraft(
+                name=product.name, identity=candidate.identity_hints,
+            ))
+        offer, created = await self._offers.upsert(
+            product_uuid=product.uuid,
+            site=candidate.site,
+            url=candidate.url,
+            canonical_url=canonical_url(candidate.url),
+            price=candidate.price,
+            availability=candidate.availability,
+        )
+        if created:
+            await self._bus.publish(Event(EventType.CATALOG_OFFER_LINKED, {
+                "product": product, "offer": offer, "source": "cross_site_search",
+                "summary": f"trouvé chez {candidate.site} — {candidate.summary}",
+            }))
+        return offer if created else None
+
+    # ------------------------------------------------------------------ #
+    # Relance des recherches infructueuses                                #
+    # ------------------------------------------------------------------ #
+
+    async def run_retry_loop(self) -> None:
+        """Reprend périodiquement les recherches restées sans résultat.
+
+        C'est ce qui permet de repérer une fiche publiée plusieurs heures
+        après les autres, sans jamais repartir de zéro.
+        """
+        if self._crosssite is None:
+            return
+        await self._crosssite.run_retry_loop(self._retry_one)
+
+    async def _retry_one(self, attempt) -> None:
+        """Rejoue UNE recherche : même produit, même site, identité à jour."""
+        product = await self._catalog.get(attempt.product_uuid)
+        if product is None:
+            return
+        if self._attempts is not None and await self._attempts.already_found(
+            attempt.product_uuid, attempt.site
+        ):
+            return   # le produit a été trouvé entre-temps chez ce marchand
+
+        from src.intelligence.keys import SearchKey
+
+        key = SearchKey(
+            kind=attempt.key_kind, value=attempt.key_value,
+            priority=0, fields=(attempt.key_kind,),
+        )
+        candidates, _ = await self._crosssite.search_everywhere(
+            attempt.product_uuid, product.identity,
+            only_sites=[attempt.site], only_keys=[key],
+        )
+        created = await self._ingest_candidates(candidates, product)
+        if created:
+            log.alert(
+                "Relance fructueuse — « %s » enfin trouvé chez %s (%s).",
+                product.name, attempt.site, key,
+            )
+            await self._bus.publish(Event(EventType.CATALOG_OFFER_LINKED, {
+                "product": product, "offer": created[0],
+                "source": "retry", "summary": f"trouvé après relance ({key})",
+            }))
+
+    def stop(self) -> None:
+        if self._crosssite is not None:
+            self._crosssite.stop()

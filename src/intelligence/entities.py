@@ -23,7 +23,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from src.intelligence.identity import ProductIdentity
 from src.models import Priority
+
+
+def _empty_identity() -> ProductIdentity:
+    return ProductIdentity()
 
 
 class OfferStatus(str, Enum):
@@ -98,6 +103,10 @@ class ProductDraft:
 
     C'est l'entrée du moteur de corrélation : il décide si ce brouillon
     représente un produit déjà connu, ou un produit inédit.
+
+    `identity` porte le profil complet (v2) : mêmes informations que
+    `identifiers`/`attributes`, plus les clés additionnelles (ASIN, modèle,
+    fabricant), les alias et la confiance de chaque champ.
     """
 
     name: str
@@ -105,6 +114,7 @@ class ProductDraft:
     attributes: ProductAttributes = field(default_factory=ProductAttributes)
     tags: tuple[str, ...] = ()
     priority: Priority = Priority.NORMAL
+    identity: "ProductIdentity" = field(default_factory=lambda: _empty_identity())
 
 
 @dataclass(frozen=True)
@@ -120,6 +130,7 @@ class CanonicalProduct:
     priority: Priority
     created_at: datetime
     updated_at: datetime
+    identity: "ProductIdentity" = field(default_factory=lambda: _empty_identity())
 
     def enriched_with(self, draft: ProductDraft) -> "CanonicalProduct":
         """Absorbe les informations d'un brouillon sans rien écraser."""

@@ -104,12 +104,16 @@ class MicromaniaDiscovery:
         )
 
 
-    async def search(self, query, ctx: DiscoveryContext):
+    async def search(self, identity, ctx: DiscoveryContext, key=None):
         """Recherche inter-sites — méthode PROPRE à ce plugin.
 
-        Le coordinateur ignore les plugins qui n'implémentent pas `search`,
-        et ce plugin s'abstient tant qu'aucune URL de recherche n'est
-        configurée : on n'invente pas le format d'URL d'un marchand.
+        Le moteur fournit l'identité complète du produit et la clé à
+        essayer ; le plugin reste seul juge de COMMENT chercher. Ici : la
+        recherche interne du site, dont l'URL est configurée (on n'invente
+        pas le format d'URL d'un marchand).
+
+        Retourne des OfferCandidate motivés : confiance, champs concordants
+        et raison, pour que le dashboard puisse expliquer le rapprochement.
         """
         template = (ctx.options.get("search_url_template") or "").strip()
         if not template or "{query}" not in template:
@@ -119,17 +123,54 @@ class MicromaniaDiscovery:
             )
             return ()
 
+        term = key.value if key is not None else (
+            identity.ean or identity.upc or identity.canonical_name or ""
+        )
+        if not term:
+            return ()
+
         from urllib.parse import quote_plus
 
-        url_patterns = tuple(ctx.options.get("url_patterns") or DEFAULT_URL_PATTERNS)
-        term = query.best_term
-        return await listing_products(
+        found = await listing_products(
             ctx,
             template.replace("{query}", quote_plus(term)),
-            url_patterns,
+            tuple(ctx.options.get("url_patterns") or DEFAULT_URL_PATTERNS),
             use_browser=bool(ctx.options.get("use_browser", False)),
             max_products=int(ctx.options.get("max_search_results", 20)),
         )
+        return [
+            _to_candidate(product, identity, key)
+            for product in found
+        ]
+
+
+def _to_candidate(product, identity, key):
+    """Traduit un résultat de listing en candidat motivé.
+
+    La confiance vient de la clé qui a produit le résultat : une réponse à
+    une recherche par EAN vaut mieux qu'une réponse à une recherche par nom.
+    """
+    from src.intelligence.candidates import OfferCandidate
+    from src.intelligence.keys import KEY_PRIORITIES
+    from src.intelligence.naming import similarity
+
+    kind = key.kind if key is not None else "canonical_name"
+    confidence = KEY_PRIORITIES.get(kind, 50)
+    matched = [kind]
+    reason = f"trouvé par recherche {kind}"
+
+    # Une clé faible se vérifie sur le nom : sinon, on ne conclut rien.
+    if confidence < KEY_PRIORITIES["sku"]:
+        proximity = similarity(product.title, identity.canonical_name or "")
+        confidence = int(confidence * max(0.5, proximity))
+        matched.append("canonical_name")
+        reason = f"recherche {kind}, nom proche à {proximity:.0%}"
+
+    return OfferCandidate(
+        url=product.url, title=product.title, price=product.price,
+        image_url=product.image_url, confidence=confidence,
+        matched_fields=tuple(matched), reason=reason,
+    )
 
 
 def _title_from_url(url: str) -> str:

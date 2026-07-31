@@ -224,16 +224,66 @@ engine = MatchingEngine([*default_strategies(), VisualSimilarityStrategy()])
 La stratégie est une coroutine : elle peut appeler un service distant ou un
 modèle sans bloquer le reste.
 
-### Recherche inter-sites
+### Identité produit et recherche multi-clés
 
-Un plugin de découverte peut exposer une méthode `search()` optionnelle.
-Le coordinateur interroge alors tous les marchands capables avec
-l'identifiant le plus fort disponible (EAN, puis UPC, MPN, nom) — chaque
-plugin restant libre de sa méthode (HTTP, API, sitemap, recherche interne,
-Playwright). Les plugins sans `search()` sont simplement ignorés.
+Chaque information découverte devient **immédiatement une clé de recherche
+chez tous les autres marchands**. Le profil d'identité rassemble EAN, UPC,
+ISBN, GTIN, ASIN, SKU, MPN, référence constructeur, numéro de modèle,
+marque, fabricant, collection, édition, date de sortie, nom canonique,
+alias et images — **chaque champ portant sa confiance et sa source**.
+
+Amazon publie un UPC ? Le moteur construit aussitôt la liste des
+recherches, de la plus discriminante à la plus vague :
+
+```
+ 98  upc=196214141612
+ 93  asin=B0H3PRH89L
+ 92  mpn=10-10410-102
+ 80  brand_model=Pokémon 10-10410-102
+ 70  canonical_name=Pokémon Premiers Partenaires Série 3
+```
+
+Chaque plugin reçoit l'identité **et** la clé à essayer, puis choisit seul
+sa méthode (API, recherche interne, sitemap, RSS, HTTP, Playwright). Il
+rend des candidats motivés — confiance, champs concordants, raison — et
+s'arrête dès qu'un résultat dépasse `stop_confidence`.
+
+### Mémoire des recherches et relance automatique
+
+**Un échec n'est jamais perdu.** Si Micromania ne connaît pas encore cet
+UPC aujourd'hui, la tentative est enregistrée avec une heure de relance.
+Le moteur y revient tout seul — 30 min, puis 45 min, 1 h 07… plafonné à
+6 h — jusqu'à ce que la fiche apparaisse.
+
+C'est décisif pour les drops, où les pages sortent progressivement selon
+les enseignes : la fiche publiée trois heures après les autres est repérée
+sans repartir de zéro.
+
+La page Catalogue expose, pour chaque produit, la section **Identité**
+(valeurs, confiances, sources, alias, clés générées) et l'historique des
+**recherches inter-sites** : quel marchand, quelle clé, quel résultat, et
+l'heure de la prochaine relance.
 
 Activation : `intelligence.cross_site_search` dans
 [config/discovery.yaml](config/discovery.yaml).
+
+### Ajouter une méthode d'identification (OCR, code-barres, CLIP, LLM…)
+
+Une classe déposée dans `src/intelligence/strategies/` ou
+`plugins/<site>/identity.py` — elle est **découverte automatiquement** :
+
+```python
+class BarcodeStrategy:
+    name = "barcode_ocr"
+    priority = 95
+
+    async def enrich(self, identity, context):
+        # context porte url, titre, html, image_url
+        return identity.with_field("ean", decoded, 88, "barcode_ocr")
+```
+
+Aucune modification du moteur. Une stratégie en échec est journalisée et
+ignorée : l'identité déjà acquise n'est jamais perdue.
 
 ### Page Catalogue
 
