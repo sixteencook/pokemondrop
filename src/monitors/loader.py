@@ -50,12 +50,20 @@ def discover_plugins(registry: MonitorRegistry, package_name: str = "plugins") -
             )
             continue
 
+        # METADATA peut vivre dans metadata.py ou directement dans le
+        # __init__.py du plugin : les deux dispositions sont acceptées.
         metadata = None
         try:
             meta_module = importlib.import_module(f"{package_name}.{info.name}.metadata")
             metadata = getattr(meta_module, "METADATA", None)
         except ImportError:
-            pass  # metadata.py optionnel
+            pass
+        if metadata is None:
+            try:
+                plugin_package = importlib.import_module(f"{package_name}.{info.name}")
+                metadata = getattr(plugin_package, "METADATA", None)
+            except Exception:  # noqa: BLE001
+                pass
 
         try:
             registry.register(monitor_class, metadata)

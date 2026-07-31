@@ -405,6 +405,54 @@ inutile à chaque cycle.
 > recevra le même 403 depuis cette IP. Voir « HTTP 403 en production »
 > dans [DEPLOY.md](DEPLOY.md).
 
+### Plugin Amazon — la référence
+
+`plugins/amazon/` est le modèle de tous les futurs marchands. Il montre
+qu'un plugin peut être bien plus qu'une liste de mots-clés :
+
+```
+plugins/amazon/
+├── __init__.py     METADATA + exports
+├── keywords.py     vocabulaire par état, sans aucune logique
+├── parser.py       enum AmazonState, buy box, URL canonique
+├── monitor.py      surveillance d'une fiche connue
+├── identity.py     stratégie d'identité (auto-découverte)
+└── discovery.py    exploration + recherche par identité
+```
+
+**États natifs.** Une vraie enum (`AVAILABLE`, `INVITATION`, `PREORDER`,
+`COMING_SOON`, `OUT_OF_STOCK`, `UNAVAILABLE`, `UNKNOWN`) traduite vers le
+vocabulaire du cœur. Les états sont évalués du plus spécifique au plus
+général, et une mention de rupture l'emporte sur un bouton résiduel.
+La comparaison ignore casse, accents et espaces insécables.
+
+**Buy box.** Prix, devise, vendeur, expéditeur, note de stock, variation,
+édition et présence de la buy box — exposés dans `details`. Le vendeur est
+volontairement **hors du hash** : Amazon fait tourner ses marchands, cela
+déclencherait des alertes sans rapport avec la disponibilité.
+
+**URL.** `/dp/`, `/gp/product/`, `/gp/aw/d/`, liens affiliés (`?tag=`),
+sponsorisés, `ref=`, `utm_*`, ancres — tout est ramené à
+`https://www.amazon.fr/dp/<ASIN>` avant la première requête.
+
+**Identité.** ASIN (URL ou HTML), UPC/EAN/GTIN, MPN, numéro de modèle,
+marque, fabricant, collection, édition, date de sortie — lus dans les
+données structurées *et* dans le tableau de caractéristiques Amazon, avec
+conversion UPC-A → EAN-13 et dates au format ISO.
+
+**Recherche.** `search(identity, ctx, key)` : accès direct par ASIN,
+recherche du code pour EAN/UPC/MPN, recherche texte pondérée par la
+ressemblance du titre pour les clés faibles. Le moteur ne connaît aucune
+URL Amazon.
+
+**Playwright.** HTTP d'abord, toujours. Le navigateur n'est ouvert que si
+la réponse est inexploitable — page d'interception détectée ou HTML trop
+maigre. Une fiche lisible en HTTP n'ouvre jamais Chromium.
+
+> Amazon protège fortement ses pages. Le plugin se contente d'un accès
+> ordinaire et ne contourne aucune protection : une interception rend
+> « aucun résultat », que le moteur retentera plus tard.
+
 ### Ajouter un nouveau site (architecture par plugins)
 
 Chaque site est un **plugin totalement indépendant** dans `plugins/`,

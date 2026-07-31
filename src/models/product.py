@@ -114,6 +114,10 @@ class ProductSnapshot:
     checked_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    #: Informations libres relevées par le plugin (vendeur, expédition,
+    #: état natif du marchand, variation…). Volontairement HORS du hash :
+    #: un vendeur qui tourne ne doit pas déclencher d'alerte à lui seul.
+    details: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +128,7 @@ class ProductSnapshot:
             "page_exists": self.page_exists,
             "content_hash": self.content_hash,
             "checked_at": self.checked_at,
+            "details": self.details,
         }
 
     @classmethod
@@ -136,6 +141,7 @@ class ProductSnapshot:
             page_exists=bool(data.get("page_exists", False)),
             content_hash=data.get("content_hash"),
             checked_at=data.get("checked_at", ""),
+            details=dict(data.get("details") or {}),
         )
 
 
