@@ -1,9 +1,12 @@
 """Mots-clés propres à Micromania.
 
-Les fiches Pokémon TCG 30e anniversaire n'étant pas encore publiées,
-ces listes partent des mots-clés génériques, enrichis du vocabulaire
-habituel de Micromania. À affiner en observant les vraies pages le
-jour venu — SEUL ce fichier (et selectors.py) sera à ajuster.
+La comparaison est faite sur du texte normalisé (accents repliés, casse et
+espaces uniformisés) : inutile de dupliquer les variantes accentuées, mais
+les variantes de vocabulaire, elles, doivent figurer ici.
+
+C'est LE fichier à enrichir si un statut reste « unknown » alors que la
+page est bien récupérée : les logs de diagnostic listent les libellés de
+boutons réellement présents sur la page.
 """
 
 from src.monitors.generic import (
@@ -15,13 +18,23 @@ from src.monitors.generic import (
 PREORDER_KEYWORDS: tuple[str, ...] = DEFAULT_PREORDER_KEYWORDS + (
     "réserver",
     "réservation",
+    "je précommande",
+    "précommandez",
 )
 
 ADD_TO_CART_KEYWORDS: tuple[str, ...] = DEFAULT_ADD_TO_CART_KEYWORDS + (
     "retrait en magasin",
+    "ajouter au panier",
+    "j'achète",
+    "commander",
+    "disponible en ligne",
 )
 
 UNAVAILABLE_KEYWORDS: tuple[str, ...] = DEFAULT_UNAVAILABLE_KEYWORDS + (
     "offre momentanément indisponible",
     "produit indisponible en ligne",
+    "actuellement indisponible",
+    "me prévenir",
+    "alertez-moi",
+    "non disponible en ligne",
 )

@@ -139,6 +139,9 @@ async def delete_product(uuid: str, ctx: AppContext = Depends(get_ctx)) -> None:
     await ctx.checks.purge_product(uuid)
     await ctx.timeline.purge_product(uuid)
     await ctx.alerts.purge_product(uuid)
+    # La fiche découverte redevient « ignorée » : elle ne sera pas
+    # re-proposée en boucle au prochain balayage.
+    await ctx.discoveries.detach_product(uuid)
 
 
 @router.post(

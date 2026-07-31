@@ -28,6 +28,9 @@ notifdrop/
 │   │   └── events.py           # Event bus (moteur → DB / captures / WS / Telegram)
 │   ├── models/                 # Dataclasses typées (produit, snapshot, événement)
 │   ├── monitors/               # base, generic, plugin, loader, registry
+│   ├── discovery/              # Découverte : plugins, règles, fingerprint
+│   ├── intelligence/           # Product Intelligence : entités, matching,
+│   │                           # identifiants, recherche inter-sites
 │   ├── db/                     # SQLAlchemy : schéma, migrations, seed
 │   ├── repositories/           # Couche Repository (SQLite → PostgreSQL)
 │   ├── notifications/          # base, telegram (photo + texte), manager
@@ -151,6 +154,206 @@ products:
 
 Ajouter un bloc dans `products:` avec un `name` unique, le `site`, l'`url`,
 l'intervalle et `enabled`.
+
+## Product Intelligence Engine — raisonner en produits, plus en URL
+
+Une URL n'est qu'une **offre** d'un marchand pour un produit. Le catalogue
+raisonne donc en deux entités :
+
+| Entité | Contenu | Ce qu'elle n'a pas |
+|---|---|---|
+| **Product** | nom canonique, marque, collection, édition, catégorie, date de sortie, image, EAN/UPC/ISBN/MPN/SKU, tags, priorité | **aucune URL** |
+| **Offer** | site, URL, prix, devise, disponibilité, statut, historique | — |
+
+Un produit possède plusieurs offres. **Une offre n'est jamais supprimée** :
+elle change d'état (`active`, `inactive`, `not_found`, `removed`,
+`archived`) pour que l'historique reste entier.
+
+### Corrélation automatique
+
+Quand une fiche est découverte, le moteur cherche si elle représente un
+produit déjà connu. Les méthodes sont ordonnées par confiance :
+
+| Score | Méthode |
+|---|---|
+| 100 | EAN identique |
+| 98 | UPC identique |
+| 96 | ISBN identique |
+| 95 | MPN identique |
+| 92 | SKU constructeur identique |
+| 90 | Référence constructeur identique |
+| 85 | Nom normalisé + marque |
+| 80 | Nom proche + date de sortie |
+| 75 | Nom proche + collection |
+| 70 | Nom normalisé seul |
+
+Au-dessus de `merge_threshold` (90 par défaut), la fiche rejoint le produit
+existant et l'enrichit. En dessous — mais au-dessus de `suggestion_floor` —
+elle crée un nouveau produit **et** une suggestion de fusion dans le
+dashboard : **rien n'est jamais fusionné à tort en silence**.
+
+Les identifiants sont validés (clé de contrôle GTIN) et normalisés : un
+UPC-A américain devient l'EAN-13 équivalent, donc un produit trouvé chez
+deux marchands de continents différents se rejoint bien. Les codes bidons
+(`0000000000000`) sont refusés — les accepter fusionnerait à confiance 100
+tous les produits qui les portent.
+
+### Enrichissement
+
+Les plugins extraient ce que les marchands publient déjà pour les moteurs
+de recherche — **JSON-LD schema.org**, microdata, balises meta : EAN, UPC,
+SKU, MPN, marque, date de sortie, image. Aucune connaissance des sites
+n'est nécessaire. Chaque marchand complète les trous laissés par les
+autres, sans jamais écraser une valeur déjà connue.
+
+### Ajouter une méthode de corrélation (OCR, embeddings, similarité visuelle…)
+
+Une classe, une entrée dans la liste — le moteur ne change pas :
+
+```python
+class VisualSimilarityStrategy:
+    name = "visual_similarity"
+    score = 88
+
+    async def find(self, draft, candidates):
+        ...  # OCR, embeddings, recherche inversée d'image…
+
+engine = MatchingEngine([*default_strategies(), VisualSimilarityStrategy()])
+```
+
+La stratégie est une coroutine : elle peut appeler un service distant ou un
+modèle sans bloquer le reste.
+
+### Recherche inter-sites
+
+Un plugin de découverte peut exposer une méthode `search()` optionnelle.
+Le coordinateur interroge alors tous les marchands capables avec
+l'identifiant le plus fort disponible (EAN, puis UPC, MPN, nom) — chaque
+plugin restant libre de sa méthode (HTTP, API, sitemap, recherche interne,
+Playwright). Les plugins sans `search()` sont simplement ignorés.
+
+Activation : `intelligence.cross_site_search` dans
+[config/discovery.yaml](config/discovery.yaml).
+
+### Page Catalogue
+
+Une ligne par **produit**, dépliable sur toutes ses offres : marchand,
+disponibilité, prix, état, dernière vérification — la meilleure offre est
+mise en avant. Le champ `group` des produits surveillés devient
+automatique : c'est l'UUID du produit canonique.
+
+## Découverte automatique des produits
+
+Le moteur ne se contente plus de surveiller des URL connues : il peut
+**trouver lui-même les nouvelles fiches** publiées sur un site.
+
+Deux familles de plugins, totalement indépendantes :
+
+| Famille | Fichier | Rôle |
+|---|---|---|
+| **Monitor** | `plugins/<site>/monitor.py` | Surveille UNE URL connue |
+| **Discovery** | `plugins/<site>/discovery.py` | Explore le site et repère les fiches |
+
+Un site peut n'avoir que l'un, que l'autre, ou les deux. Le cœur ne connaît
+que ces deux interfaces — ajouter Amazon, Fnac ou Cultura ne demande
+**aucune modification du moteur**.
+
+### Fonctionnement
+
+À chaque cycle (`scan_interval`), chaque plugin explore son site et rend
+une liste de fiches. Pour chacune, le moteur calcule une **empreinte
+stable** (EAN, sinon SKU, sinon URL canonique — paramètres de tracking
+retirés) : une fiche déjà connue n'est jamais redécouverte. Les nouvelles
+passent par les **règles configurables**, puis par le **mode
+d'approbation** :
+
+| Mode | Comportement |
+|---|---|
+| `auto` | tout ce qui n'est pas exclu est importé et surveillé aussitôt |
+| `review` | tout arrive dans la page **Découverte** pour validation manuelle |
+| `rules` | seules les fiches correspondant aux règles sont importées |
+
+L'exclusion s'applique dans **tous** les modes. Un produit importé est
+surveillé en quelques secondes, **sans redémarrage**.
+
+Tout se règle dans [config/discovery.yaml](config/discovery.yaml)
+(désactivé par défaut).
+
+### Stratégies d'exploration
+
+Chaque plugin choisit la sienne — le moteur n'en sait rien : HTTP, sitemap,
+Playwright, API, RSS. Deux outils génériques sont fournis
+(`src/discovery/strategies.py`) :
+
+- **sitemap** : suit `robots.txt` → `sitemap.xml`. Ne demande que l'URL
+  racine du site : **aucune URL de fiche à connaître**. C'est le mode par
+  défaut du plugin Micromania.
+- **listings** : analyse des pages de catégorie / nouveautés / précommandes
+  dont les URL sont renseignées dans la configuration, avec rendu navigateur
+  optionnel.
+
+### Page Découverte
+
+Miniature, date, site, titre, URL, statut et motif de la décision, avec
+trois actions : **Ajouter à la surveillance**, **Ignorer**, **Toujours
+ignorer** (décision durable). Les nouvelles fiches apparaissent en temps
+réel par WebSocket, et une alerte Telegram « 🆕 Nouveau produit détecté »
+est envoyée.
+
+## Diagnostiquer un statut « unknown »
+
+Chaque analyse écrit une ligne de diagnostic (niveau `CHECK` : visible dans
+`logs/drop-monitor.log` et dans la page **Logs** du dashboard) :
+
+```
+[CHECK] Analyse micromania — Pokémon 30 Ans UPC : html=145.2 Ko, texte=8421 car.,
+        titre=« … », boutons candidats=17 [Tout accepter, Précommander, …],
+        retenus=['Précommander'], mots-clés=['precommander (bouton)']
+        → statut=preorder, prix=189,99 €
+```
+
+Quand le statut reste `unknown`, une erreur explicite indique quoi faire.
+Les trois causes possibles, dans l'ordre de fréquence :
+
+1. **Fiche rendue en JavaScript** — le HTML statique ne contient pas encore
+   le bouton d'achat. Le rendu navigateur (ci-dessous) prend le relais
+   automatiquement.
+2. **Page d'attente anti-robot** servie en HTTP 200 (Cloudflare, DataDome,
+   Imperva…) — détectée et nommée explicitement dans les logs.
+3. **Vocabulaire différent** — le bouton existe mais son libellé n'est pas
+   dans les mots-clés. Les « boutons candidats » du log listent ce que la
+   page contient réellement : il suffit d'ajouter le libellé manquant dans
+   `plugins/<site>/keywords.py`.
+
+La comparaison est insensible aux accents, à la casse et aux espaces
+insécables : « PRECOMMANDER », « Précommander » et « Ajouter&nbsp;au&nbsp;panier »
+sont tous reconnus.
+
+## Rendu navigateur de secours (403 et pages JavaScript)
+
+Chaque vérification tente d'abord une requête HTTP (rapide, ~200 ms). Elle
+bascule automatiquement sur Chromium dans deux cas :
+
+- le site répond **403 / 401 / 429 / 503** (page refusée à un client non-navigateur) ;
+- la page est bien reçue mais **l'analyse reste inconclusive** (`unknown`).
+
+Le HTML obtenu après exécution du JavaScript est alors ré-analysé. Le
+navigateur est **le même que celui des captures d'écran** — aucun coût
+supplémentaire au démarrage — et les rendus simultanés sont bornés par
+`BROWSER_FALLBACK_MAX_CONCURRENT`.
+
+Si le HTML statique suffit, aucun navigateur n'est lancé : le surcoût
+n'existe que là où il est nécessaire.
+
+Pour un site dont les fiches sont *toujours* rendues côté client, passer
+`requires_javascript = True` dans son `monitor.py` évite la requête HTTP
+inutile à chaque cycle.
+
+> ⚠️ **Limite à connaître.** Ce rendu affiche la page comme un navigateur
+> ordinaire ; il ne contourne aucune protection. Si un site refuse une
+> **plage d'adresses IP** (typiquement celles des hébergeurs), Chromium
+> recevra le même 403 depuis cette IP. Voir « HTTP 403 en production »
+> dans [DEPLOY.md](DEPLOY.md).
 
 ### Ajouter un nouveau site (architecture par plugins)
 

@@ -1,0 +1,118 @@
+# =============================================================================
+# Découverte automatique des fiches produit.
+#
+# Le moteur interroge périodiquement chaque plugin de découverte
+# (plugins/<site>/discovery.py), applique les règles ci-dessous, puis
+# importe ou met en attente les fiches inédites.
+#
+# ⚠️ Désactivée par défaut : activez-la en connaissance de cause, après
+#    avoir vérifié le comportement en mode « review ».
+# =============================================================================
+
+enabled: false
+
+# auto   : tout ce qui n'est pas exclu est importé et surveillé aussitôt
+# review : tout arrive dans la page « Découverte » pour validation manuelle
+# rules  : seules les fiches correspondant aux règles sont importées ;
+#          les autres restent en attente
+mode: review
+
+# Intervalle entre deux balayages, en secondes (minimum 60).
+# Un site n'a pas besoin d'être exploré souvent : 15 min suffisent largement.
+scan_interval: 900
+
+# Garde-fou : nombre maximal de nouveautés traitées par site et par balayage.
+# Évite qu'un premier scan n'importe des milliers de fiches d'un coup.
+max_new_per_scan: 50
+
+# --- Règles de tri -----------------------------------------------------------
+# Comparaison insensible aux accents, à la casse et aux espaces.
+# L'EXCLUSION prime toujours : « Pokémon » + « occasion » reste rejeté.
+rules:
+  include:
+    - pokemon
+    - booster
+    - upc
+    - elite trainer box
+    - etb
+    - bundle
+    - collection
+    - coffret
+
+  exclude:
+    - occasion
+    - reconditionne
+    - figurine usagee
+    - guide
+    - livre
+    - poster
+    - goodies
+
+  # Filtres portant sur l'URL plutôt que sur le titre (facultatifs).
+  url_include: []
+  url_exclude:
+    - /occasion/
+
+# --- Valeurs des produits créés automatiquement -------------------------------
+defaults:
+  check_interval: 60
+  priority: high
+  enabled: true
+  tags:
+    - auto-découvert
+
+# --- Product Intelligence Engine ----------------------------------------------
+# Corrèle les fiches de différents marchands vers un MÊME produit canonique.
+# Une URL devient une « offre » ; le produit, lui, n'a pas d'URL.
+intelligence:
+  enabled: true
+
+  # Score minimal pour fusionner automatiquement deux fiches.
+  #   100 EAN · 98 UPC · 96 ISBN · 95 MPN · 92 SKU · 90 réf. constructeur
+  #    85 nom+marque · 80 nom+sortie · 75 nom+collection · 70 nom seul
+  # À 90, seuls les identifiants forts fusionnent sans intervention.
+  merge_threshold: 90
+
+  # En dessous du seuil mais au-dessus de ce plancher, le rapprochement est
+  # PROPOSÉ dans le dashboard au lieu d'être appliqué.
+  suggestion_floor: 70
+
+  # Interroger les autres marchands pour retrouver le même produit.
+  # Nécessite qu'un plugin sache chercher (search_url_template ci-dessous).
+  cross_site_search: false
+  cross_site_max_sites: 6
+
+# --- Configuration par site ---------------------------------------------------
+# Chaque bloc est transmis tel quel au plugin du site : le moteur n'en
+# interprète rien. Les clés dépendent donc du plugin concerné.
+sites:
+  micromania:
+    enabled: true
+
+    # Stratégie 1 : sitemap (robots.txt → sitemap.xml).
+    # Ne demande aucune URL de fiche — c'est le mode recommandé au départ.
+    use_sitemap: true
+
+    # Stratégie 2 : pages de catégorie / nouveautés / précommandes.
+    # À remplir avec les URL réelles des rayons à surveiller, par exemple
+    # la page « Cartes à collectionner » ou « Précommandes ».
+    listing_urls: []
+
+    # Fragments d'URL identifiant une fiche produit sur ce site.
+    url_patterns:
+      - /p/
+      - /produit
+      - /product
+
+    # Rendu Chromium des pages de listing (utile si elles sont construites
+    # en JavaScript). Plus lent : à n'activer qu'en cas de besoin.
+    use_browser: false
+
+    # Plafond de fiches remontées par balayage.
+    max_products: 300
+
+    # Recherche inter-sites : URL de la recherche du site, {query} étant
+    # remplacé par l'EAN ou le nom du produit. Vide = le plugin ne sait pas
+    # chercher et sera simplement ignoré par le coordinateur.
+    # Exemple : "https://www.micromania.fr/search?q={query}"
+    search_url_template: ""

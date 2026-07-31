@@ -6,7 +6,9 @@ import {
   Activity,
   Bell,
   Boxes,
+  Compass,
   Gauge,
+  Layers,
   HeartPulse,
   LogOut,
   Package,
@@ -20,7 +22,9 @@ import { Badge } from "@/components/ui";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: Gauge, end: true },
-  { to: "/products", label: "Produits", icon: Package },
+  { to: "/catalog", label: "Catalogue", icon: Layers },
+  { to: "/products", label: "Surveillance", icon: Package },
+  { to: "/discovery", label: "Découverte", icon: Compass },
   { to: "/alerts", label: "Alertes", icon: Bell },
   { to: "/activity", label: "Activité", icon: Activity },
   { to: "/logs", label: "Logs", icon: ScrollText },

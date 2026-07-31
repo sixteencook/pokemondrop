@@ -32,6 +32,20 @@ CAPTION_LIMIT = 1024
 #: Limite de taille d'une photo envoyée par URL/multipart (10 Mo).
 PHOTO_SIZE_LIMIT = 10 * 1024 * 1024
 
+#: Longueur maximale d'une valeur affichée dans une transition.
+VALUE_PREVIEW_LIMIT = 140
+
+
+def _short(value: Optional[str]) -> str:
+    """Valeur lisible dans un message : tronquée proprement si trop longue."""
+    if not value:
+        return "—"
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= VALUE_PREVIEW_LIMIT:
+        return collapsed
+    return collapsed[: VALUE_PREVIEW_LIMIT - 1] + "…"
+
+
 _CHANGE_LABELS: dict[ChangeType, str] = {
     ChangeType.PRODUCT_APPEARED: "🆕 Fiche produit en ligne",
     ChangeType.PRICE_APPEARED: "💶 Prix affiché",
@@ -62,8 +76,24 @@ class TelegramNotifier(BaseNotifier):
         Retourne True si AU MOINS un destinataire a reçu le message.
         """
         message = self._format(event, with_screenshot=screenshot is not None)
-        photo = self._usable_photo(screenshot)
+        return await self._deliver(message, self._usable_photo(screenshot))
 
+    async def send_discovery(
+        self,
+        title: str,
+        site_label: str,
+        url: str,
+        price: Optional[str] = None,
+        imported: bool = False,
+        image_url: Optional[str] = None,
+    ) -> bool:
+        """Annonce une fiche inédite repérée par la couche Découverte."""
+        return await self._deliver(
+            self._format_discovery(title, site_label, url, price, imported), None
+        )
+
+    async def _deliver(self, message: str, photo: Optional[Path]) -> bool:
+        """Transport commun : photo si disponible, repli texte systématique."""
         delivered = 0
         for chat_id in self._chat_ids:
             sent = False
@@ -80,7 +110,7 @@ class TelegramNotifier(BaseNotifier):
 
         if 0 < delivered < len(self._chat_ids):
             log.error(
-                "Alerte partiellement délivrée : %d/%d destinataire(s) Telegram.",
+                "Message partiellement délivré : %d/%d destinataire(s) Telegram.",
                 delivered, len(self._chat_ids),
             )
         return delivered > 0
@@ -166,13 +196,41 @@ class TelegramNotifier(BaseNotifier):
             f"<b>Événement :</b> {escape(label)}",
         ]
         if event.old_value or event.new_value:
+            # Les libellés de boutons peuvent être longs : on tronque AVANT
+            # la mise en forme HTML, pour ne jamais couper une balise.
             lines.append(
-                f"<b>Changement :</b> {escape(event.old_value or '—')} → "
-                f"{escape(event.new_value or '—')}"
+                f"<b>Changement :</b> {escape(_short(event.old_value))} → "
+                f"{escape(_short(event.new_value))}"
             )
         if event.snapshot.price:
             lines.append(f"<b>Prix :</b> {escape(event.snapshot.price)}")
         lines.append(f"<b>URL :</b> {escape(event.product.url)}")
         if with_screenshot:
             lines += ["", "📸 Capture d'écran jointe"]
+        return "\n".join(lines)
+
+    def _format_discovery(
+        self,
+        title: str,
+        site_label: str,
+        url: str,
+        price: Optional[str],
+        imported: bool,
+    ) -> str:
+        lines = [
+            "🆕 <b>NOUVEAU PRODUIT DÉTECTÉ</b>",
+            "",
+            f"<b>Site :</b> {escape(site_label)}",
+            f"<b>Produit :</b> {escape(title)}",
+        ]
+        if price:
+            lines.append(f"<b>Prix :</b> {escape(price)}")
+        lines += [
+            f"<b>Heure :</b> {datetime.now().strftime('%H:%M:%S')}",
+            f"<b>URL :</b> {escape(url)}",
+            "",
+            "✅ Surveillance démarrée automatiquement"
+            if imported
+            else "⏳ En attente de validation dans le dashboard",
+        ]
         return "\n".join(lines)

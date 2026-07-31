@@ -135,6 +135,128 @@ export interface SiteCountPoint {
   count: number;
 }
 
+export type DiscoveryStatus =
+  | "pending"
+  | "imported"
+  | "ignored"
+  | "blocked"
+  | "gone";
+
+export interface Discovery {
+  fingerprint: string;
+  site: string;
+  url: string;
+  title: string;
+  image_url: string | null;
+  price: string | null;
+  source: string;
+  status: DiscoveryStatus;
+  decision_reason: string;
+  product_uuid: string | null;
+  times_seen: number;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface DiscoveryState {
+  enabled: boolean;
+  mode: "auto" | "review" | "rules";
+  scan_interval: number;
+  sites: string[];
+  counts: Record<string, number>;
+  last_discovery_at: string | null;
+  last_scan_summary: string | null;
+}
+
+export interface ScanReport {
+  sites_scanned: number;
+  products_seen: number;
+  new_products: number;
+  imported: number;
+  pending: number;
+  excluded: number;
+  gone: number;
+  errors: string[];
+  summary: string;
+}
+
+export type OfferStatus =
+  | "active"
+  | "inactive"
+  | "not_found"
+  | "removed"
+  | "archived";
+
+export interface Offer {
+  uuid: string;
+  product_uuid: string;
+  site: string;
+  url: string;
+  price: string | null;
+  currency: string;
+  availability: Availability | null;
+  status: OfferStatus;
+  monitored_uuid: string | null;
+  first_seen_at: string;
+  last_checked_at: string | null;
+  last_changed_at: string | null;
+}
+
+export interface CatalogProduct {
+  uuid: string;
+  name: string;
+  brand: string | null;
+  collection: string | null;
+  edition: string | null;
+  category: string | null;
+  release_date: string | null;
+  image_url: string | null;
+  ean: string | null;
+  upc: string | null;
+  isbn: string | null;
+  mpn: string | null;
+  manufacturer_sku: string | null;
+  manufacturer_ref: string | null;
+  tags: string[];
+  priority: Priority;
+  created_at: string;
+  updated_at: string;
+  offers: Offer[];
+  best_offer_site: string | null;
+}
+
+export interface OfferHistoryEntry {
+  id: number;
+  price: string | null;
+  availability: string | null;
+  status: OfferStatus;
+  recorded_at: string;
+}
+
+export interface MatchSuggestion {
+  id: number;
+  product_uuid: string;
+  product_name: string | null;
+  candidate_uuid: string;
+  candidate_name: string | null;
+  score: number;
+  method: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface CatalogState {
+  enabled: boolean;
+  merge_threshold: number;
+  suggestion_floor: number;
+  cross_site_search: boolean;
+  products: number;
+  offers: number;
+  pending_suggestions: number;
+  methods: string[];
+  search_capable_sites: string[];
+}
+
 export interface Monitor {
   site: string;
   display_name: string;

@@ -18,12 +18,17 @@ import httpx
 from src.config import AppSettings
 from src.core import EventBus, MonitorEngine
 from src.db import Database
+from src.discovery import DiscoveryEngine, DiscoverySettings
+from src.intelligence import IntelligenceSettings, ProductIntelligenceEngine
 from src.models import GlobalSettings
 from src.monitors import MonitorRegistry
 from src.notifications import NotificationManager
 from src.repositories import (
     AlertRepository,
+    CatalogRepository,
     CheckRepository,
+    DiscoveryRepository,
+    OfferRepository,
     ProductRepository,
     SnapshotRepository,
     TimelineRepository,
@@ -47,9 +52,17 @@ class AppContext:
     checks: CheckRepository
     timeline: TimelineRepository
     alerts: AlertRepository
+    discoveries: DiscoveryRepository
+    catalog: CatalogRepository
+    offers: OfferRepository
     stats: StatsService
     screenshots: ScreenshotService
+    discovery_settings: DiscoverySettings
+    intelligence_settings: IntelligenceSettings
     base_dir: Path
+    discovery_engine: Optional[DiscoveryEngine] = None
+    discovery_task: Optional[object] = None
+    intelligence: Optional[ProductIntelligenceEngine] = None
     hub: WsHub = field(default_factory=WsHub)
     loop: Optional[asyncio.AbstractEventLoop] = None
     started_at: float = field(default_factory=time.monotonic)

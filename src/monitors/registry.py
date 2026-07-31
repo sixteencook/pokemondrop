@@ -14,6 +14,7 @@ import httpx
 from src.monitors.base import BaseMonitor
 from src.monitors.generic import GenericHtmlMonitor
 from src.monitors.plugin import PluginMetadata
+from src.monitors.renderer import HtmlRenderer
 
 
 class UnknownSiteError(Exception):
@@ -21,10 +22,19 @@ class UnknownSiteError(Exception):
 
 
 class MonitorRegistry:
-    """Instancie et met en cache un monitor par site."""
+    """Instancie et met en cache un monitor par site.
 
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    Le `renderer` (rendu navigateur) est injecté dans chaque monitor : les
+    plugins n'ont rien à câbler, et le cœur reste indépendant de Playwright.
+    """
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        renderer: Optional[HtmlRenderer] = None,
+    ) -> None:
         self._client = client
+        self._renderer = renderer
         self._classes: dict[str, type[BaseMonitor]] = {}
         self._instances: dict[str, BaseMonitor] = {}
         self._metadata: dict[str, PluginMetadata] = {}
@@ -51,7 +61,7 @@ class MonitorRegistry:
                 raise UnknownSiteError(
                     f"Site inconnu « {site} ». Plugins chargés : {known}"
                 )
-            self._instances[site] = self._classes[site](self._client)
+            self._instances[site] = self._classes[site](self._client, self._renderer)
         return self._instances[site]
 
     @property
@@ -59,7 +69,9 @@ class MonitorRegistry:
         return sorted(self._classes)
 
 
-def create_registry(client: httpx.AsyncClient) -> MonitorRegistry:
+def create_registry(
+    client: httpx.AsyncClient, renderer: Optional[HtmlRenderer] = None
+) -> MonitorRegistry:
     """Registre peuplé par la découverte automatique des plugins.
 
     Le monitor générique est toujours disponible (site: generic) pour
@@ -68,7 +80,7 @@ def create_registry(client: httpx.AsyncClient) -> MonitorRegistry:
     # Import local pour éviter le cycle registry ↔ loader.
     from src.monitors.loader import discover_plugins
 
-    registry = MonitorRegistry(client)
+    registry = MonitorRegistry(client, renderer)
     registry.register(GenericHtmlMonitor)
     discover_plugins(registry)
     return registry

@@ -21,17 +21,38 @@ from fastapi.staticfiles import StaticFiles
 from src.config import AppSettings, ConfigError, load_config
 from src.core import EventBus, MonitorEngine
 from src.db import Database, import_products_from_yaml, migrate_legacy_state
+from src.discovery import (
+    DiscoveryContext,
+    DiscoveryEngine,
+    discover_discovery_plugins,
+    load_discovery_settings,
+)
 from src.models import GlobalSettings
 from src.monitors import create_registry
 from src.notifications import NotificationManager, TelegramNotifier
+from src.intelligence import (
+    CrossSiteSearchCoordinator,
+    OfferSyncService,
+    ProductIntelligenceEngine,
+    load_intelligence_settings,
+)
 from src.repositories import (
     AlertRepository,
+    CatalogRepository,
     CheckRepository,
+    DiscoveryRepository,
+    OfferRepository,
     ProductRepository,
     SnapshotRepository,
     TimelineRepository,
 )
-from src.services import EventRecorder, ScreenshotService, StatsService
+from src.services import (
+    EventRecorder,
+    PlaywrightRenderer,
+    ScreenshotService,
+    StatsService,
+)
+from src.services.screenshots.browser import BrowserPool
 from src.utils import setup_logging
 from src.utils.logger import get_logger
 from src.web.api import build_v1_router
@@ -59,6 +80,10 @@ _OPENAPI_TAGS = [
     {"name": "Authentification", "description": "Connexion, session, déconnexion."},
     {"name": "Produits", "description": "CRUD des produits surveillés, vérification "
                                         "immédiate, timeline par produit."},
+    {"name": "Découverte", "description": "Fiches produit repérées automatiquement "
+                                          "sur les sites, et leur validation."},
+    {"name": "Catalogue", "description": "Produits canoniques et leurs offres "
+                                         "marchandes — corrélation multi-sites."},
     {"name": "Alertes", "description": "Historique des alertes envoyées."},
     {"name": "Timeline", "description": "Flux d'activité global."},
     {"name": "Checks", "description": "Historique des vérifications."},
@@ -89,6 +114,9 @@ async def _build_context(
     checks = CheckRepository(db.session_factory)
     timeline = TimelineRepository(db.session_factory)
     alerts = AlertRepository(db.session_factory)
+    discoveries = DiscoveryRepository(db.session_factory)
+    catalog = CatalogRepository(db.session_factory)
+    offers = OfferRepository(db.session_factory)
 
     if yaml_products:
         await import_products_from_yaml(products, yaml_products)
@@ -100,7 +128,22 @@ async def _build_context(
                purged, CHECKS_RETENTION_DAYS)
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(defaults.request_timeout))
-    registry = create_registry(client)
+
+    # UN SEUL Chromium partagé : captures d'écran ET rendu de secours.
+    browser_pool = BrowserPool(settings.screenshots)
+    renderer = PlaywrightRenderer(
+        browser_pool,
+        timeout_ms=settings.screenshots.timeout_ms,
+        max_concurrent=settings.browser_fallback_max_concurrent,
+        enabled=settings.browser_fallback,
+    )
+    if settings.browser_fallback:
+        log.ok(
+            "Rendu navigateur de secours actif (403 / pages en JavaScript) — "
+            "%d rendu(s) simultané(s) maximum.",
+            settings.browser_fallback_max_concurrent,
+        )
+    registry = create_registry(client, renderer)
 
     # Ordre d'abonnement (le bus respecte l'ordre) :
     #   1) la base           → pose alert_id dans le payload
@@ -110,7 +153,9 @@ async def _build_context(
     bus = EventBus()
     EventRecorder(checks, timeline, alerts).attach_to(bus)
 
-    screenshots = ScreenshotService(settings.screenshots, bus, registry)
+    screenshots = ScreenshotService(
+        settings.screenshots, bus, registry, pool=browser_pool
+    )
     screenshots.attach_to(bus)
 
     hub = WsHub()
@@ -128,13 +173,43 @@ async def _build_context(
     engine = MonitorEngine(registry, bus, snapshots, defaults,
                            product_provider=products.list_all)
 
+    # --- Couche Découverte (strictement additive) -----------------------
+    discovery_config = BASE_DIR / "config" / "discovery.yaml"
+    discovery_settings = load_discovery_settings(discovery_config)
+    discovery_registry = discover_discovery_plugins()
+    make_context = lambda options: DiscoveryContext(  # noqa: E731
+        client=client, renderer=renderer, options=options
+    )
+
+    # --- Product Intelligence Engine (additive elle aussi) --------------
+    intelligence_settings = load_intelligence_settings(discovery_config)
+    intelligence = ProductIntelligenceEngine(
+        intelligence_settings, catalog, offers, products, bus,
+        search=CrossSiteSearchCoordinator(
+            discovery_registry, make_context,
+            max_sites=intelligence_settings.cross_site_max_sites,
+        ),
+    )
+    OfferSyncService(offers).attach_to(bus)
+
+    discovery_engine = DiscoveryEngine(
+        discovery_settings, discovery_registry, discoveries, products, bus,
+        context_factory=make_context,
+        intelligence=intelligence if intelligence_settings.enabled else None,
+    )
+
     ctx = AppContext(
         settings=settings, defaults=defaults, db=db, client=client, bus=bus,
         registry=registry, engine=engine, notifications=notifications,
         products=products, snapshots=snapshots, checks=checks,
-        timeline=timeline, alerts=alerts,
+        timeline=timeline, alerts=alerts, discoveries=discoveries,
+        catalog=catalog, offers=offers,
         stats=None,  # type: ignore[arg-type] — posé juste en dessous
         screenshots=screenshots,
+        discovery_settings=discovery_settings,
+        intelligence_settings=intelligence_settings,
+        discovery_engine=discovery_engine,
+        intelligence=intelligence,
         base_dir=BASE_DIR,
         hub=hub,
         loop=asyncio.get_running_loop(),
@@ -205,12 +280,19 @@ def create_app(
         if run_engine:
             ctx.engine_task = asyncio.create_task(ctx.engine.run(), name="monitor-engine")
             log.ok("Moteur de surveillance démarré dans le serveur web.")
+            if ctx.discovery_engine is not None:
+                ctx.discovery_task = asyncio.create_task(
+                    ctx.discovery_engine.run(), name="discovery-engine"
+                )
         try:
             yield
         finally:
             ctx.engine.stop()
-            task = ctx.engine_task
-            if task is not None:
+            if ctx.discovery_engine is not None:
+                ctx.discovery_engine.stop()
+            for task in (ctx.engine_task, ctx.discovery_task):
+                if task is None:
+                    continue
                 task.cancel()
                 try:
                     await task

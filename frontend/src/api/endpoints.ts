@@ -4,11 +4,19 @@ import { buildQuery, http } from "./client";
 import type {
   Alert,
   AlertsPerDayPoint,
+  CatalogProduct,
+  CatalogState,
   Check,
   CheckNowResult,
   ChecksPerHourPoint,
+  Discovery,
+  DiscoveryState,
   LogEntry,
+  MatchSuggestion,
   Monitor,
+  Offer,
+  OfferHistoryEntry,
+  ScanReport,
   Page,
   Product,
   ProductInput,
@@ -42,6 +50,35 @@ export const productsApi = {
   checkNow: (uuid: string) => http.post<CheckNowResult>(`/products/${uuid}/check`),
   timeline: (uuid: string, params: ListParams = {}) =>
     http.get<Page<TimelineEntry>>(`/products/${uuid}/timeline${buildQuery(params)}`),
+};
+
+export const catalogApi = {
+  list: (params: ListParams = {}) =>
+    http.get<Page<CatalogProduct>>(`/catalog/products${buildQuery(params)}`),
+  get: (uuid: string) => http.get<CatalogProduct>(`/catalog/products/${uuid}`),
+  state: () => http.get<CatalogState>("/catalog/status"),
+  offerHistory: (offerUuid: string) =>
+    http.get<OfferHistoryEntry[]>(`/catalog/offers/${offerUuid}/history`),
+  suggestions: () => http.get<MatchSuggestion[]>("/catalog/suggestions"),
+  acceptSuggestion: (id: number) =>
+    http.post<CatalogProduct>(`/catalog/suggestions/${id}/accept`),
+  rejectSuggestion: (id: number) =>
+    http.post<void>(`/catalog/suggestions/${id}/reject`),
+  findOffers: (uuid: string) =>
+    http.post<Offer[]>(`/catalog/products/${uuid}/find-offers`),
+};
+
+export const discoveriesApi = {
+  list: (params: ListParams = {}) =>
+    http.get<Page<Discovery>>(`/discoveries${buildQuery(params)}`),
+  state: () => http.get<DiscoveryState>("/discoveries/status"),
+  scan: () => http.post<ScanReport>("/discoveries/scan"),
+  approve: (fingerprint: string) =>
+    http.post<Discovery>(`/discoveries/${fingerprint}/approve`),
+  ignore: (fingerprint: string) =>
+    http.post<Discovery>(`/discoveries/${fingerprint}/ignore`),
+  block: (fingerprint: string) =>
+    http.post<Discovery>(`/discoveries/${fingerprint}/block`),
 };
 
 export const alertsApi = {

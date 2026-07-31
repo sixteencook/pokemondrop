@@ -33,6 +33,7 @@ _TIMELINE_LABELS: dict[ChangeType, str] = {
 }
 
 BASELINE_EVENT_TYPE = "baseline"
+DISCOVERY_EVENT_TYPE = "discovered"
 
 
 def timeline_label(change: ChangeEvent) -> str:
@@ -67,9 +68,14 @@ class EventRecorder:
             EventType.CHANGE_DETECTED,
             EventType.SCREENSHOT_COMPLETED,
             EventType.NOTIFICATION_SENT,
+            EventType.NEW_PRODUCT_DISCOVERED,
         })
 
     async def _on_event(self, event: Event) -> None:
+        if event.type is EventType.NEW_PRODUCT_DISCOVERED:
+            await self._record_discovery(event)
+            return
+
         product: Optional[ProductConfig] = event.payload.get("product")
         if product is None or not product.uuid:
             return  # produit non persisté (tests, CLI hors base) : rien à écrire
@@ -127,3 +133,17 @@ class EventRecorder:
             alert_id = event.payload.get("alert_id")
             if alert_id is not None:
                 await self._alerts.mark_notified(alert_id)
+
+    async def _record_discovery(self, event: Event) -> None:
+        """Ouvre la timeline d'un produit créé par la découverte automatique."""
+        product_uuid = event.payload.get("product_uuid")
+        discovery = event.payload.get("discovery")
+        if not product_uuid or discovery is None:
+            return  # fiche en attente de validation : pas encore de produit
+        await self._timeline.add(
+            product_uuid,
+            event_type=DISCOVERY_EVENT_TYPE,
+            label="Produit découvert automatiquement",
+            new_value=event.payload.get("site_label") or discovery.site,
+            price=discovery.price,
+        )

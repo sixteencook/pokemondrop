@@ -25,14 +25,35 @@ from src.core import EventBus, MonitorEngine
 from src.db import Database, import_products_from_yaml, migrate_legacy_state
 from src.monitors import create_registry
 from src.notifications import NotificationManager, TelegramNotifier
+from src.discovery import (
+    DiscoveryContext,
+    DiscoveryEngine,
+    discover_discovery_plugins,
+    load_discovery_settings,
+)
+from src.intelligence import (
+    CrossSiteSearchCoordinator,
+    OfferSyncService,
+    ProductIntelligenceEngine,
+    load_intelligence_settings,
+)
 from src.repositories import (
     AlertRepository,
+    CatalogRepository,
     CheckRepository,
+    DiscoveryRepository,
+    OfferRepository,
     ProductRepository,
     SnapshotRepository,
     TimelineRepository,
 )
-from src.services import EventRecorder, ScreenshotService, send_test_alert
+from src.services import (
+    EventRecorder,
+    PlaywrightRenderer,
+    ScreenshotService,
+    send_test_alert,
+)
+from src.services.screenshots.browser import BrowserPool
 from src.utils import setup_logging
 from src.utils.logger import get_logger
 
@@ -108,12 +129,23 @@ async def run() -> int:
         # --- Event bus et abonnés -----------------------------------------
         # L'ordre d'abonnement compte : base → captures → notifications.
         bus = EventBus()
-        registry = create_registry(client)
+
+        # UN SEUL Chromium partagé : captures d'écran ET rendu de secours.
+        browser_pool = BrowserPool(settings.screenshots)
+        renderer = PlaywrightRenderer(
+            browser_pool,
+            timeout_ms=settings.screenshots.timeout_ms,
+            max_concurrent=settings.browser_fallback_max_concurrent,
+            enabled=settings.browser_fallback,
+        )
+        registry = create_registry(client, renderer)
 
         recorder = EventRecorder(checks_repo, timeline_repo, alerts_repo)
         recorder.attach_to(bus)
 
-        screenshots = ScreenshotService(settings.screenshots, bus, registry)
+        screenshots = ScreenshotService(
+            settings.screenshots, bus, registry, pool=browser_pool
+        )
         screenshots.attach_to(bus)
         await screenshots.start()
 
@@ -137,12 +169,43 @@ async def run() -> int:
             product_provider=products_repo.list_all,
         )
 
+        # --- Découverte + Intelligence produit -------------------------------
+        discovery_config = BASE_DIR / "config" / "discovery.yaml"
+        discovery_settings = load_discovery_settings(discovery_config)
+        discovery_registry = discover_discovery_plugins()
+        make_context = lambda options: DiscoveryContext(  # noqa: E731
+            client=client, renderer=renderer, options=options
+        )
+
+        intelligence_settings = load_intelligence_settings(discovery_config)
+        catalog_repo = CatalogRepository(db.session_factory)
+        offers_repo = OfferRepository(db.session_factory)
+        intelligence = ProductIntelligenceEngine(
+            intelligence_settings, catalog_repo, offers_repo, products_repo, bus,
+            search=CrossSiteSearchCoordinator(
+                discovery_registry, make_context,
+                max_sites=intelligence_settings.cross_site_max_sites,
+            ),
+        )
+        OfferSyncService(offers_repo).attach_to(bus)
+
+        discovery_engine = DiscoveryEngine(
+            discovery_settings, discovery_registry,
+            DiscoveryRepository(db.session_factory), products_repo, bus,
+            context_factory=make_context,
+            intelligence=intelligence if intelligence_settings.enabled else None,
+        )
+
         log.ok("Drop Monitor démarré — %d produit(s) en base.", len(db_products))
+        discovery_task = asyncio.create_task(discovery_engine.run())
         try:
             await engine.run()
         except asyncio.CancelledError:
             pass
         finally:
+            discovery_engine.stop()
+            discovery_task.cancel()
+            await asyncio.gather(discovery_task, return_exceptions=True)
             await screenshots.stop()
             await db.dispose()
     return 0

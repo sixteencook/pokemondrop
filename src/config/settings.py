@@ -79,6 +79,8 @@ class AppSettings:
     secret_key: str = ""
     token_ttl_hours: int = 24
     screenshots: ScreenshotSettings = field(default_factory=ScreenshotSettings)
+    browser_fallback: bool = True
+    browser_fallback_max_concurrent: int = 2
 
     @property
     def telegram_configured(self) -> bool:
@@ -117,4 +119,9 @@ class AppSettings:
             secret_key=os.getenv("SECRET_KEY", "").strip(),
             token_ttl_hours=int(os.getenv("AUTH_TOKEN_TTL_HOURS", "24")),
             screenshots=ScreenshotSettings.from_env(data_dir),
+            browser_fallback=os.getenv("BROWSER_FALLBACK_ENABLED", "true")
+            .strip().lower() not in ("0", "false", "no", "off"),
+            browser_fallback_max_concurrent=max(
+                1, int(os.getenv("BROWSER_FALLBACK_MAX_CONCURRENT", "2"))
+            ),
         )

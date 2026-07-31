@@ -7,6 +7,8 @@ import { Spinner } from "@/components/ui";
 import LoginPage from "@/pages/Login";
 import DashboardPage from "@/pages/Dashboard";
 import ProductsPage from "@/pages/Products";
+import CatalogPage from "@/pages/Catalog";
+import DiscoveryPage from "@/pages/Discovery";
 import AlertsPage from "@/pages/Alerts";
 import ActivityPage from "@/pages/Activity";
 import LogsPage from "@/pages/Logs";
@@ -32,6 +34,26 @@ function RealtimeToasts() {
         .join(" — "),
     });
   });
+
+  useWsEvent("discovery", (message) => {
+    const payload = message.payload as {
+      title?: string;
+      site_label?: string;
+      imported?: boolean;
+    };
+    push({
+      tone: "accent",
+      title: "🆕 Nouveau produit détecté",
+      description: [
+        payload.site_label,
+        payload.title,
+        payload.imported ? "surveillance démarrée" : "à valider",
+      ]
+        .filter(Boolean)
+        .join(" — "),
+    });
+  });
+
   return null;
 }
 
@@ -56,6 +78,8 @@ export default function App() {
           <Route element={<Protected />}>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/products" element={<ProductsPage />} />
+            <Route path="/catalog" element={<CatalogPage />} />
+            <Route path="/discovery" element={<DiscoveryPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/logs" element={<LogsPage />} />

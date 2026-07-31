@@ -47,6 +47,8 @@ class NotificationManager:
         self._bus = bus
         bus.subscribe(self._on_change_detected, {EventType.CHANGE_DETECTED})
         bus.subscribe(self._on_screenshot_completed, {EventType.SCREENSHOT_COMPLETED})
+        bus.subscribe(self._on_product_discovered,
+                      {EventType.NEW_PRODUCT_DISCOVERED})
 
     # ------------------------------------------------------------------ #
     # Réception                                                           #
@@ -60,6 +62,26 @@ class NotificationManager:
 
     async def _on_screenshot_completed(self, event: Event) -> None:
         await self._handle(event, screenshot=self._resolve(event.payload))
+
+    async def _on_product_discovered(self, event: Event) -> None:
+        """Fiche inédite trouvée par la couche Découverte."""
+        discovery = event.payload.get("discovery")
+        if discovery is None:
+            return
+        for notifier in self._notifiers:
+            delivered = await notifier.send_discovery(
+                title=discovery.title,
+                site_label=event.payload.get("site_label", discovery.site),
+                url=discovery.url,
+                price=discovery.price,
+                imported=bool(event.payload.get("imported")),
+                image_url=discovery.image_url,
+            )
+            if delivered:
+                log.alert(
+                    "Découverte annoncée (%s) — %s",
+                    notifier.channel_name, discovery.title,
+                )
 
     def _resolve(self, payload: dict) -> Optional[Path]:
         """Chemin absolu de la capture (le payload ne porte que le relatif)."""

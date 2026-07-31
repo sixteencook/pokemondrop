@@ -10,6 +10,9 @@ Types émis par le serveur :
     timeline      nouvel événement de timeline (baseline, changement…)
     alert         changement notifiable détecté (toast + refresh alertes)
     screenshot    capture terminée (alert_id, path ou null) → miniature
+    discovery     fiche produit inédite trouvée par la découverte
+    discovery_scan bilan d'un balayage de découverte
+    catalog       produit canonique créé, ou offre rattachée
     alert_status  résultat de l'envoi Telegram (alert_id, delivered)
     engine        moteur démarré / arrêté
     log           nouvelle ligne de log
@@ -109,6 +112,11 @@ class EventBroadcaster:
             EventType.SCREENSHOT_COMPLETED,
             EventType.NOTIFICATION_SENT,
             EventType.NOTIFICATION_FAILED,
+            EventType.NEW_PRODUCT_DISCOVERED,
+            EventType.DISCOVERY_SCAN_COMPLETED,
+            EventType.CATALOG_PRODUCT_CREATED,
+            EventType.CATALOG_OFFER_LINKED,
+            EventType.CATALOG_MATCH_PENDING,
         })
 
     async def _on_event(self, event: Event) -> None:
@@ -121,6 +129,42 @@ class EventBroadcaster:
 
         if event.type in (EventType.ENGINE_STARTED, EventType.ENGINE_STOPPED):
             return [message("engine", {"running": event.type is EventType.ENGINE_STARTED})]
+
+        if event.type in (
+            EventType.CATALOG_PRODUCT_CREATED,
+            EventType.CATALOG_OFFER_LINKED,
+            EventType.CATALOG_MATCH_PENDING,
+        ):
+            catalog_product = payload.get("product")
+            offer = payload.get("offer")
+            return [message("catalog", {
+                "kind": event.type.value,
+                "product_uuid": getattr(catalog_product, "uuid", None),
+                "product_name": getattr(catalog_product, "name", None),
+                "site": getattr(offer, "site", None),
+                "score": payload.get("score"),
+                "summary": payload.get("summary", ""),
+            })]
+
+        if event.type is EventType.DISCOVERY_SCAN_COMPLETED:
+            return [message("discovery_scan", {"summary": payload.get("summary", "")})]
+
+        if event.type is EventType.NEW_PRODUCT_DISCOVERED:
+            discovery = payload.get("discovery")
+            if discovery is None:
+                return []
+            return [message("discovery", {
+                "fingerprint": payload.get("fingerprint"),
+                "site": discovery.site,
+                "site_label": payload.get("site_label", discovery.site),
+                "title": discovery.title,
+                "url": discovery.url,
+                "image_url": discovery.image_url,
+                "price": discovery.price,
+                "status": payload.get("status"),
+                "imported": bool(payload.get("imported")),
+                "product_uuid": payload.get("product_uuid"),
+            })]
 
         if product is None:
             return []

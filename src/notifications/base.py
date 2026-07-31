@@ -29,3 +29,19 @@ class BaseNotifier(ABC):
         Retourne True si l'alerte a été délivrée (au moins un destinataire).
         Un canal qui ne gère pas les images doit ignorer `screenshot`.
         """
+
+    async def send_discovery(
+        self,
+        title: str,
+        site_label: str,
+        url: str,
+        price: Optional[str] = None,
+        imported: bool = False,
+        image_url: Optional[str] = None,
+    ) -> bool:
+        """Annonce une fiche produit inédite trouvée par la découverte.
+
+        Implémentation par défaut : canal ne gérant pas les découvertes.
+        Un canal qui les supporte surcharge cette méthode (voir Telegram).
+        """
+        return False

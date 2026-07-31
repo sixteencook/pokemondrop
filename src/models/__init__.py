@@ -8,12 +8,15 @@ from .product import (
     ProductConfig,
     ProductSnapshot,
 )
+from .discovery import DiscoveryRecord, DiscoveryStatus
 from .records import AlertRecord, CheckRecord, TimelineEntry
 
 __all__ = [
     "IMPORTANT_CHANGE_TYPES",
     "AlertRecord",
     "Availability",
+    "DiscoveryRecord",
+    "DiscoveryStatus",
     "ChangeEvent",
     "ChangeType",
     "CheckRecord",

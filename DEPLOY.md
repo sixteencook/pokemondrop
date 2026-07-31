@@ -175,9 +175,38 @@ Si `DATA_DIR` ne pointe pas vers un volume monté en production, une erreur
 explicite est journalisée : **les données seraient perdues au prochain
 déploiement**.
 
+### HTTP 403 en production alors que tout fonctionne en local
+
+C'est le cas le plus fréquent, et il n'est **pas** dû à l'application : de
+nombreux sites marchands refusent le trafic venant des plages d'adresses
+IP d'hébergeurs (Railway, AWS, OVH…), tout en acceptant une connexion
+domestique. La même URL répond donc 200 chez vous et 403 depuis Railway.
+
+Le rendu navigateur de secours est tenté automatiquement et résout les 403
+liés à l'absence de JavaScript ou d'en-têtes de navigateur. **Mais si le
+refus porte sur l'adresse IP, Chromium reçoit le même 403** : il sort par
+la même IP.
+
+Options, par ordre de simplicité :
+
+1. **Héberger la surveillance chez vous** (Raspberry Pi, NAS, PC allumé) via
+   `docker compose` : l'IP domestique n'est pas filtrée. C'est la solution la
+   plus fiable pour ce type de site.
+2. **Conserver Railway pour le dashboard** et faire tourner le moteur à la
+   maison, les deux pointant vers la même base — nécessite de migrer vers
+   PostgreSQL (`DATABASE_URL`), ce que la couche Repository permet déjà.
+3. **Espacer les vérifications** (`check_interval` plus large) : certains
+   filtrages sont déclenchés par la fréquence, pas par l'IP seule.
+
+Le projet ne cherche pas à contourner ces protections — ni empreinte
+navigateur falsifiée, ni rotation de proxys, ni résolution de CAPTCHA.
+Un site qui refuse l'accès doit être respecté.
+
 | Symptôme | Piste |
 |---|---|
 | Healthcheck en échec au démarrage | Consulter les logs : `SECRET_KEY`, volume `/data` non monté, ou port incorrect |
+| HTTP 403 depuis Railway, 200 en local | Blocage par plage d'IP — voir la section ci-dessus |
+| Statut bloqué sur `unknown` | Lire la ligne `[CHECK] Analyse …` dans les logs : elle liste les boutons réellement présents sur la page |
 | « Chromium indisponible » dans Paramètres | Mémoire insuffisante — réduire `SCREENSHOT_MAX_CONCURRENT` ou désactiver les captures |
 | Aucune alerte reçue | Vérifier le token/chat ID dans Paramètres, et qu'un produit est activé avec une URL |
 | Données perdues après déploiement | Le volume n'est pas monté sur `/data` |

@@ -36,6 +36,11 @@ class EventType(str, Enum):
     CHECK_FAILED = "check_failed"            # échec réseau après épuisement des retries
     BASELINE_RECORDED = "baseline_recorded"  # premier passage d'un produit (timeline)
     CHANGE_DETECTED = "change_detected"      # un changement significatif (→ alerte)
+    NEW_PRODUCT_DISCOVERED = "new_product_discovered"   # fiche inédite trouvée
+    DISCOVERY_SCAN_COMPLETED = "discovery_scan_completed"
+    CATALOG_PRODUCT_CREATED = "catalog_product_created"  # produit canonique inédit
+    CATALOG_OFFER_LINKED = "catalog_offer_linked"        # offre rattachée à un produit
+    CATALOG_MATCH_PENDING = "catalog_match_pending"      # fusion à valider
     SCREENSHOT_COMPLETED = "screenshot_completed"  # capture terminée (réussie ou non)
     NOTIFICATION_SENT = "notification_sent"
     NOTIFICATION_FAILED = "notification_failed"
