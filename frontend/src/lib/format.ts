@@ -57,6 +57,8 @@ export const PRIORITY_META: Record<Priority, { label: string; tone: Tone }> = {
 
 export const EVENT_TYPE_META: Record<string, { tone: Tone }> = {
   baseline: { tone: "neutral" },
+  unstable: { tone: "warning" },
+  discovered: { tone: "accent" },
   product_appeared: { tone: "accent" },
   price_appeared: { tone: "info" },
   price_changed: { tone: "info" },

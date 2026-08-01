@@ -54,6 +54,15 @@ class GlobalSettings:
     request_timeout: int = 15
     max_retries: int = 3
     retry_backoff: int = 5
+    #: Confirmer tout changement par une seconde analyse avant d'alerter.
+    #: Coûte une requête supplémentaire UNIQUEMENT quand un changement est
+    #: détecté ; évite les fausses alertes dues à une page temporairement
+    #: différente (bannière, test A/B, rendu partiel).
+    confirm_changes: bool = True
+    #: Délai avant la seconde analyse, en secondes.
+    confirmation_delay: int = 4
+    #: Archiver le HTML ayant motivé une alerte importante.
+    keep_evidence: bool = True
 
 
 @dataclass(frozen=True)
@@ -118,6 +127,12 @@ class ProductSnapshot:
     #: état natif du marchand, variation…). Volontairement HORS du hash :
     #: un vendeur qui tourne ne doit pas déclencher d'alerte à lui seul.
     details: dict[str, str] = field(default_factory=dict)
+    #: HTML analysé, conservé en mémoire le temps du cycle pour pouvoir
+    #: archiver la preuve d'une décision importante. JAMAIS persisté en
+    #: base : il n'apparaît ni dans to_dict(), ni dans le hash.
+    raw_html: Optional[str] = field(
+        default=None, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {

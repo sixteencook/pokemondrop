@@ -65,6 +65,7 @@ export interface Alert {
   url: string;
   screenshot_path: string | null;
   screenshot_url: string | null;
+  evidence_url: string | null;
   notified: boolean;
   created_at: string;
 }

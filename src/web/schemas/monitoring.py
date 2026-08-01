@@ -29,6 +29,9 @@ class AlertOut(BaseModel):
     screenshot_url: Optional[str] = Field(
         None, description="URL de service de la capture (authentifiée), si elle existe"
     )
+    evidence_url: Optional[str] = Field(
+        None, description="Page analysée au moment de la décision, si archivée"
+    )
     notified: bool
     created_at: datetime
 
@@ -49,6 +52,9 @@ class AlertOut(BaseModel):
             screenshot_path=record.screenshot_path,
             screenshot_url=(
                 f"/api/v1/alerts/{record.id}/screenshot" if record.screenshot_path else None
+            ),
+            evidence_url=(
+                f"/api/v1/alerts/{record.id}/evidence" if record.evidence_path else None
             ),
             notified=record.notified,
             created_at=record.created_at,

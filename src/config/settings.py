@@ -90,6 +90,11 @@ class AppSettings:
     def auth_configured(self) -> bool:
         return bool(self.dashboard_username and self.dashboard_password)
 
+    @property
+    def evidence_dir(self) -> Path:
+        """Dossier des pages archivées lors des alertes importantes."""
+        return self.data_dir / "evidence"
+
     @classmethod
     def load(cls, env_file: Path | None = None) -> "AppSettings":
         """Charge le .env (s'il existe) puis lit les variables d'environnement.

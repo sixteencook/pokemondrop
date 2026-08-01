@@ -67,8 +67,8 @@ def detect_changes(
         if new.availability == old.availability:
             add(
                 ChangeType.BUTTON_CHANGED,
-                " | ".join(old.buttons) or "(aucun)",
-                " | ".join(new.buttons) or "(aucun)",
+                describe_buttons(old.buttons),
+                describe_buttons(new.buttons),
             )
 
     # --- Modification significative de la page (filet de sécurité) -----------
@@ -78,6 +78,46 @@ def detect_changes(
         and new.content_hash
         and old.content_hash != new.content_hash
     ):
-        add(ChangeType.PAGE_CHANGED, old.content_hash, new.content_hash)
+        # Le hash est un OUTIL INTERNE : il ne doit jamais apparaître dans
+        # une alerte ni dans le dashboard. On décrit le changement en clair.
+        add(
+            ChangeType.PAGE_CHANGED,
+            describe_state(old),
+            describe_state(new),
+        )
 
     return events
+
+
+#: Nombre de libellés affichés avant abréviation.
+MAX_DISPLAYED_BUTTONS = 3
+MAX_LABEL_LENGTH = 60
+
+
+def describe_buttons(buttons: list[str]) -> str:
+    """Libellés lisibles par un humain, jamais un identifiant technique."""
+    if not buttons:
+        return "aucun bouton"
+    shown = [_shorten(label) for label in buttons[:MAX_DISPLAYED_BUTTONS]]
+    extra = len(buttons) - len(shown)
+    rendered = " | ".join(f"« {label} »" for label in shown)
+    return f"{rendered} (+{extra})" if extra > 0 else rendered
+
+
+def describe_state(snapshot: ProductSnapshot) -> str:
+    """Résumé compréhensible d'un état de page, sans aucun hash."""
+    parts: list[str] = [snapshot.availability.value]
+    if snapshot.price:
+        parts.append(snapshot.price)
+    if snapshot.buttons:
+        parts.append(describe_buttons(snapshot.buttons))
+    elif snapshot.status_text:
+        parts.append(_shorten(snapshot.status_text))
+    return " · ".join(parts)
+
+
+def _shorten(text: str) -> str:
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= MAX_LABEL_LENGTH:
+        return collapsed
+    return collapsed[: MAX_LABEL_LENGTH - 1] + "…"

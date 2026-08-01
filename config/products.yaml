@@ -21,6 +21,21 @@ defaults:
   max_retries: 3              # tentatives avant de considérer le check en échec
   retry_backoff: 5            # secondes, doublé à chaque nouvelle tentative
 
+  # --- Fiabilité des alertes -------------------------------------------
+  # Aucun changement n'est notifié sur une seule lecture : la page est
+  # relue pour écarter les fausses alertes (bannière, test A/B, rendu
+  # partiel, état qui oscille). Si les deux lectures se contredisent,
+  # l'état précédent est conservé et l'incident est tracé dans la timeline
+  # sans notification.
+  # Coût : une requête supplémentaire UNIQUEMENT quand un changement est
+  # détecté — les vérifications de routine ne sont pas ralenties.
+  confirm_changes: true
+  confirmation_delay: 4       # secondes entre les deux lectures
+
+  # Archiver le HTML qui a motivé une alerte importante, pour pouvoir
+  # comprendre plus tard pourquoi elle est partie (page Alertes → 🔍).
+  keep_evidence: true
+
 # `group` : clé de regroupement multi-sites. Le même produit surveillé sur
 # plusieurs sites (Micromania, Fnac…) partage le même group — c'est ce qui
 # alimentera le futur tableau comparatif du dashboard.

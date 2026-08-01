@@ -405,6 +405,34 @@ inutile à chaque cycle.
 > recevra le même 403 depuis cette IP. Voir « HTTP 403 en production »
 > dans [DEPLOY.md](DEPLOY.md).
 
+## Fiabilité des alertes
+
+Le projet préfère **manquer une alerte plutôt qu'en produire une fausse**.
+Quatre garde-fous, applicables à tous les plugins :
+
+**Confirmation.** Aucun changement n'est notifié sur une seule lecture.
+Dès qu'un changement est détecté, la page est relue ; si les deux lectures
+se contredisent, l'état précédent est conservé, l'incident est tracé dans
+la timeline (« État instable ») et **rien n'est envoyé**. Une lecture
+impossible n'est jamais une confirmation. Coût : une requête
+supplémentaire *uniquement* quand un changement apparaît.
+
+**Aucun hash visible.** Le hash de contenu est un outil interne. Les
+alertes affichent des libellés lisibles — « Demande d'invitation » →
+« Ajouter au panier » — jamais un identifiant technique.
+
+**Preuve archivée.** Le HTML ayant motivé une alerte importante est
+conservé (`<DATA_DIR>/evidence/`), consultable depuis la page Alertes
+(icône 🔍). Servi en **texte brut** : la page d'un marchand n'est jamais
+exécutée dans le dashboard.
+
+**Score de confiance.** Chaque analyse Amazon reçoit un score (prix,
+bouton, buy box, identité, données structurées — 20 points chacun). Sous
+60, l'état devient `unknown` et rien n'est notifié : on attend la
+vérification suivante.
+
+Réglages : bloc `defaults` de [config/products.yaml](config/products.yaml).
+
 ### Plugin Amazon — la référence
 
 `plugins/amazon/` est le modèle de tous les futurs marchands. Il montre

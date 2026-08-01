@@ -26,7 +26,7 @@ ordinaire : aucune protection n'est contournée.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Optional
 
 import httpx
@@ -99,6 +99,10 @@ class BaseMonitor(ABC):
             return ProductSnapshot(page_exists=False)
 
         snapshot = self.parse(result.html, product)
+        if snapshot.raw_html is None:
+            # Le HTML reste disponible pour archiver la preuve d'une
+            # décision importante ; il n'est jamais persisté en base.
+            snapshot = replace(snapshot, raw_html=result.html)
 
         # Analyse inconclusive après une simple requête HTTP : la page est
         # probablement rendue en JavaScript. On refait un tour avec le

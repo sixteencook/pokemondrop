@@ -135,8 +135,11 @@ class AmazonDiscovery:
             return []
 
         analysis = parser.analyse(html)
-        if analysis.bot_wall or not analysis.title:
-            log.check("Amazon : fiche %s illisible (interception ou page vide).", asin)
+        if analysis.inconclusive or not analysis.title:
+            log.check(
+                "Amazon : fiche %s illisible (%s) — aucun candidat rendu.",
+                asin, analysis.label,
+            )
             return []
 
         return [OfferCandidate(

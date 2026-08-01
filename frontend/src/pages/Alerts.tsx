@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BellOff, ExternalLink } from "lucide-react";
+import { BellOff, ExternalLink, FileSearch } from "lucide-react";
 import { alertsApi, monitorsApi } from "@/api/endpoints";
 import type { Alert } from "@/api/types";
 import {
@@ -113,13 +113,28 @@ export default function AlertsPage() {
     {
       key: "link",
       header: "",
-      render: (alert) =>
-        alert.url ? (
-          <a href={alert.url} target="_blank" rel="noreferrer"
-             className="text-muted transition-colors hover:text-accent-hover" title="Ouvrir la fiche">
-            <ExternalLink size={14} />
-          </a>
-        ) : null,
+      render: (alert) => (
+        <div className="flex items-center justify-end gap-1.5">
+          {alert.evidence_url && (
+            <a
+              href={alert.evidence_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-muted transition-colors hover:text-accent-hover"
+              title="Voir la page analysée au moment de l'alerte"
+            >
+              <FileSearch size={14} />
+            </a>
+          )}
+          {alert.url && (
+            <a href={alert.url} target="_blank" rel="noreferrer"
+               className="text-muted transition-colors hover:text-accent-hover"
+               title="Ouvrir la fiche">
+              <ExternalLink size={14} />
+            </a>
+          )}
+        </div>
+      ),
     },
   ];
 

@@ -175,7 +175,8 @@ async def _build_context(
     notifications.attach_to(bus)
 
     engine = MonitorEngine(registry, bus, snapshots, defaults,
-                           product_provider=products.list_all)
+                           product_provider=products.list_all,
+                           evidence_dir=settings.evidence_dir)
 
     # --- Couche Découverte (strictement additive) -----------------------
     discovery_config = BASE_DIR / "config" / "discovery.yaml"

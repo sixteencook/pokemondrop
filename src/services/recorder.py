@@ -34,6 +34,7 @@ _TIMELINE_LABELS: dict[ChangeType, str] = {
 
 BASELINE_EVENT_TYPE = "baseline"
 DISCOVERY_EVENT_TYPE = "discovered"
+UNSTABLE_EVENT_TYPE = "unstable"
 
 
 def timeline_label(change: ChangeEvent) -> str:
@@ -65,6 +66,7 @@ class EventRecorder:
             EventType.CHECK_COMPLETED,
             EventType.CHECK_FAILED,
             EventType.BASELINE_RECORDED,
+            EventType.CHECK_UNSTABLE,
             EventType.CHANGE_DETECTED,
             EventType.SCREENSHOT_COMPLETED,
             EventType.NOTIFICATION_SENT,
@@ -101,6 +103,15 @@ class EventRecorder:
                 new_value=snapshot.availability.value,
                 price=snapshot.price,
             )
+        elif event.type is EventType.CHECK_UNSTABLE:
+            # Trace visible dans la timeline, mais AUCUNE alerte : deux
+            # lectures consécutives se sont contredites.
+            await self._timeline.add(
+                product.uuid,
+                event_type=UNSTABLE_EVENT_TYPE,
+                label="État instable — aucune notification",
+                new_value=event.payload.get("observed"),
+            )
         elif event.type is EventType.CHANGE_DETECTED:
             change: ChangeEvent = event.payload["change"]
             await self._timeline.add(
@@ -119,6 +130,7 @@ class EventRecorder:
                     new_value=change.new_value,
                     price=change.snapshot.price,
                     url=product.url,
+                    evidence_path=event.payload.get("evidence_path"),
                 )
                 # L'id est reporté dans le payload pour que NOTIFICATION_SENT
                 # (publié par le NotificationManager) puisse le retrouver.

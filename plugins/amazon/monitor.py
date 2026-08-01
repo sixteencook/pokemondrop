@@ -1,26 +1,30 @@
-"""Monitor Amazon.
+"""Monitor Amazon — volontairement conservateur.
 
-Contrairement au monitor générique, celui-ci n'analyse pas la page par
-mots-clés épars : il délègue à `parser.py`, qui rend un état Amazon
-typé (`AmazonState`) puis le traduit vers le vocabulaire du cœur.
+Le parser rend une analyse motivée ; ce monitor la traduit pour le cœur
+et laisse une trace complète dans les logs.
 
-Escalade navigateur : héritée de BaseMonitor et volontairement passive.
-Amazon sert souvent une page d'interception en HTTP 200 ; le parser la
-reconnaît et rend UNKNOWN, ce qui déclenche une seconde tentative avec
-Chromium. Une page lisible en HTTP n'ouvre JAMAIS de navigateur.
+Règle de conduite : quand la page ne permet pas de conclure (interception,
+captcha, confiance insuffisante), l'état devient UNKNOWN. Le moteur
+conservera alors l'état précédent plutôt que d'annoncer un faux changement.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from dataclasses import replace
+from typing import ClassVar, Optional
 
 from src.models import ProductConfig, ProductSnapshot
 from src.monitors.base import BaseMonitor
 from src.utils.logger import get_logger
 
 from . import parser
+from .parser import INCONCLUSIVE_STATES, AmazonState
 
 log = get_logger("monitors.amazon")
+
+#: Score minimal pour retenir un état. En dessous, l'analyse est jugée
+#: trop fragile et l'état devient UNKNOWN.
+DEFAULT_MIN_CONFIDENCE = 60
 
 
 class AmazonMonitor(BaseMonitor):
@@ -29,7 +33,6 @@ class AmazonMonitor(BaseMonitor):
     site_name: ClassVar[str] = "amazon"
     display_name: ClassVar[str] = "Amazon"
 
-    #: Bandeaux de consentement Amazon (capture d'écran et rendu de secours).
     cookie_selectors: ClassVar[tuple[str, ...]] = (
         "#sp-cc-accept",
         'input[name="accept"]',
@@ -37,74 +40,93 @@ class AmazonMonitor(BaseMonitor):
         'button[data-cel-widget="sp-cc-accept"]',
     )
 
-    #: La fiche est lisible en HTTP dans la majorité des cas : on n'impose
-    #: pas le navigateur, on l'escalade seulement si l'analyse échoue.
     requires_javascript: ClassVar[bool] = False
+
+    #: Seuil de confiance, ajustable par sous-classe ou en configuration.
+    min_confidence: ClassVar[int] = DEFAULT_MIN_CONFIDENCE
 
     async def check(self, product: ProductConfig) -> ProductSnapshot:
         """Normalise l'URL avant toute requête.
 
         Un lien affilié, sponsorisé ou truffé de `ref=` désigne le même
         produit : le ramener à sa forme canonique évite de surveiller deux
-        fois la même fiche et stabilise le suivi.
+        fois la même fiche.
         """
         canonical = parser.canonical_url(product.url)
         if canonical != product.url:
             log.check("URL Amazon normalisée : %s → %s", product.url, canonical)
-            from dataclasses import replace
-
             product = replace(product, url=canonical)
         return await super().check(product)
 
     def parse(self, html: str, product: ProductConfig) -> ProductSnapshot:
-        analysis = parser.analyse(html)
+        analysis = parser.analyse(html, min_confidence=self.min_confidence)
+        asin = parser.extract_asin(product.url)
 
-        if analysis.bot_wall:
-            log.check(
-                "%s : page d'interception Amazon — nouvelle tentative avec "
-                "le navigateur.", product.name,
-            )
-            return ProductSnapshot(page_exists=True, status_text="page d'interception")
+        self._log_analysis(product, analysis, asin, len(html))
 
         details = analysis.buy_box.as_details()
-        details["etat_amazon"] = analysis.state.value
-        asin = parser.extract_asin(product.url)
+        details.update({
+            "etat_amazon": analysis.state.value,
+            "etat_libelle": analysis.label,
+            "confiance": str(analysis.confidence.score),
+            "confiance_detail": analysis.confidence.detail,
+            "perimetre": analysis.scope,
+            "decision": analysis.reason,
+        })
         if asin:
             details["asin"] = asin
-
-        log.check(
-            "Analyse amazon — %s : état=%s (%s), prix=%s, vendeur=%s, "
-            "buy box=%s, boutons=%s",
-            product.name, analysis.state.value,
-            ", ".join(analysis.matched) or "aucun indice",
-            analysis.buy_box.price or "—",
-            analysis.buy_box.seller or "—",
-            "oui" if analysis.buy_box.has_buy_box else "non",
-            analysis.buttons[:4] or "—",
-        )
+        if analysis.downgraded:
+            details["declasse"] = "confiance insuffisante"
 
         return ProductSnapshot(
             availability=analysis.availability,
             price=analysis.buy_box.price,
-            buttons=analysis.buttons[:8],
+            buttons=list(analysis.buttons),
             status_text=analysis.label,
-            page_exists=True,
-            content_hash=self._hash(analysis),
+            page_exists=analysis.state is not AmazonState.ERROR,
+            content_hash=analysis.decision_hash(),
             details=details,
+            raw_html=html,
         )
 
-    def _hash(self, analysis: parser.PageAnalysis) -> str:
-        """Empreinte des seuls éléments décisifs.
+    # ------------------------------------------------------------------ #
+    # Traçabilité                                                         #
+    # ------------------------------------------------------------------ #
 
-        Le vendeur et l'expéditeur en sont volontairement absents : Amazon
-        fait tourner ses marchands, et cela déclencherait des alertes sans
-        rapport avec la disponibilité.
-        """
-        import hashlib
+    def _log_analysis(
+        self,
+        product: ProductConfig,
+        analysis: parser.PageAnalysis,
+        asin: Optional[str],
+        html_length: int,
+    ) -> None:
+        """Trace complète : toute décision doit pouvoir être reproduite."""
+        box = analysis.buy_box
+        log.check(
+            "Amazon — %s | état=%s (%s) | confiance=%d [%s] | périmètre=%s\n"
+            "         titre=%s | asin=%s | prix=%s %s | vendeur=%s | "
+            "expédié=%s | buy box=%s\n"
+            "         boutons retenus=%s\n"
+            "         boutons ignorés=%s\n"
+            "         décision=%s | html=%.1f Ko | hash=%s",
+            product.name,
+            analysis.state.value, analysis.label,
+            analysis.confidence.score, analysis.confidence.detail,
+            analysis.scope,
+            (analysis.title or "—")[:80], asin or "—",
+            box.price or "—", box.currency or "",
+            box.seller or "—", box.shipped_by or "—",
+            "oui" if box.has_buy_box else "non",
+            analysis.buttons or "—",
+            analysis.ignored_buttons or "—",
+            analysis.reason,
+            html_length / 1024,
+            analysis.decision_hash(),
+        )
 
-        payload = "|".join([
-            analysis.state.value,
-            analysis.buy_box.price or "",
-            "buybox" if analysis.buy_box.has_buy_box else "",
-        ])
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        if analysis.state in INCONCLUSIVE_STATES:
+            log.check(
+                "Amazon — %s : page non concluante (%s). L'état précédent "
+                "sera conservé, aucune alerte ne sera émise.",
+                product.name, analysis.label,
+            )

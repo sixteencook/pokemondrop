@@ -11,24 +11,19 @@ Railway, autre disque) sans invalider l'historique.
 
 from __future__ import annotations
 
-import re
 import shutil
-import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.utils.logger import get_logger
+from src.utils.text import slugify
 
 log = get_logger("screenshots.storage")
 
-_SLUG_CLEAN = re.compile(r"[^a-z0-9]+")
-
-
-def slugify(value: str, max_length: int = 60) -> str:
-    """« Pokémon 30 Ans UPC Jour » → « pokemon_30_ans_upc_jour »."""
-    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    slug = _SLUG_CLEAN.sub("_", folded.lower()).strip("_")
-    return (slug[:max_length].rstrip("_")) or "produit"
+__all__ = [
+    "build_relative_path", "prepare_target", "purge_older_than",
+    "resolve", "slugify",
+]
 
 
 def build_relative_path(

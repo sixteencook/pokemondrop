@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 
+from src.core import evidence
 from src.services.screenshots import storage
 from src.web.deps import get_ctx
 from src.web.schemas import Page, PageParams, SortParams, page_params, sort_params
@@ -76,6 +77,45 @@ async def alert_screenshot(
     return FileResponse(
         path,
         media_type="image/png",
+        filename=path.name if download else None,
+        content_disposition_type="attachment" if download else "inline",
+    )
+
+
+@router.get(
+    "/{alert_id}/evidence",
+    summary="Page analysée au moment de l'alerte",
+    description="Renvoie le HTML tel qu'il a été analysé lorsque la "
+                "décision a été prise, pour comprendre — et au besoin "
+                "rejouer — pourquoi l'alerte est partie.\n\n"
+                "Servi en **texte brut** : la page d'un marchand ne doit "
+                "jamais être exécutée dans le dashboard.",
+    responses={
+        200: {"content": {"text/plain": {}}, "description": "HTML archivé"},
+        404: {"description": "Alerte inconnue, ou aucune preuve archivée"},
+    },
+    response_class=FileResponse,
+)
+async def alert_evidence(
+    alert_id: int,
+    ctx: AppContext = Depends(get_ctx),
+    download: bool = Query(False, description="Forcer le téléchargement"),
+) -> FileResponse:
+    record = await ctx.alerts.get(alert_id)
+    if record is None or not record.evidence_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aucune preuve archivée pour cette alerte.",
+        )
+    path = evidence.resolve(ctx.settings.evidence_dir, record.evidence_path)
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fichier de preuve introuvable (supprimé ou purgé).",
+        )
+    return FileResponse(
+        path,
+        media_type="text/plain; charset=utf-8",
         filename=path.name if download else None,
         content_disposition_type="attachment" if download else "inline",
     )

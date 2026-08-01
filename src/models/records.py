@@ -52,5 +52,6 @@ class AlertRecord:
     price: Optional[str]
     url: str
     screenshot_path: Optional[str]   # rempli plus tard par le service Playwright
+    evidence_path: Optional[str]     # HTML archivé au moment de la décision
     notified: bool
     created_at: datetime

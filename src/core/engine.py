@@ -25,6 +25,9 @@ import random
 import time
 from typing import Awaitable, Callable
 
+from pathlib import Path
+
+from src.core import evidence
 from src.core.detector import detect_changes
 from src.core.events import Event, EventBus, EventType
 from src.models import GlobalSettings, ProductConfig, ProductSnapshot
@@ -49,11 +52,13 @@ class MonitorEngine:
         settings: GlobalSettings,
         product_provider: ProductProvider,
         reload_interval: float = 5.0,
+        evidence_dir: Optional[Path] = None,
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._snapshots = snapshots
         self._settings = settings
+        self._evidence_dir = evidence_dir
         self._provider = product_provider
         self._reload_interval = reload_interval
         self._stopping = asyncio.Event()
@@ -186,6 +191,71 @@ class MonitorEngine:
             except asyncio.TimeoutError:
                 continue  # délai écoulé → nouveau check
 
+    def _store_evidence(
+        self, product: ProductConfig, change, snapshot: ProductSnapshot
+    ) -> Optional[str]:
+        """Archive la page qui a motivé une décision importante."""
+        if not self._settings.keep_evidence or self._evidence_dir is None:
+            return None
+        return evidence.store(
+            self._evidence_dir, product, change, snapshot.raw_html
+        )
+
+    async def _confirm(
+        self, product: ProductConfig, first: ProductSnapshot
+    ) -> tuple[bool, Optional[ProductSnapshot]]:
+        """Relit la page et vérifie que la décision est reproductible.
+
+        Retourne (confirmé, seconde analyse). Une lecture impossible n'est
+        pas une confirmation : dans le doute, on ne notifie pas.
+        """
+        if self._settings.confirmation_delay:
+            await asyncio.sleep(self._settings.confirmation_delay)
+
+        monitor = self._registry.get(product.site)
+        try:
+            second = await monitor.check(product)
+        except FetchError as exc:
+            log.check(
+                "Confirmation impossible (%s) : %s — changement non notifié.",
+                product.name, exc,
+            )
+            return False, None
+
+        same = (
+            second.availability is first.availability
+            and second.price == first.price
+            and second.content_hash == first.content_hash
+        )
+        if same:
+            log.check("Changement confirmé par une seconde analyse : %s",
+                      product.name)
+        return same, second
+
+    async def _report_unstable(
+        self,
+        product: ProductConfig,
+        previous: ProductSnapshot,
+        first: ProductSnapshot,
+        second: Optional[ProductSnapshot],
+    ) -> None:
+        """Journalise un état instable — sans alerte, sans changement d'état."""
+        observed = " → ".join(filter(None, [
+            previous.availability.value,
+            first.availability.value,
+            second.availability.value if second else "illisible",
+        ]))
+        log.check(
+            "État instable pour %s : %s. L'état précédent est conservé, "
+            "aucune notification envoyée.", product.name, observed,
+        )
+        await self._bus.publish(Event(EventType.CHECK_UNSTABLE, {
+            "product": product,
+            "previous": previous,
+            "observed": observed,
+            "snapshot": second or first,
+        }))
+
     async def _check_once(self, product: ProductConfig) -> "ProductSnapshot | None":
         monitor = self._registry.get(product.site)
         log.check("Vérification : %s (%s)", product.name, product.site)
@@ -225,6 +295,17 @@ class MonitorEngine:
         previous = await self._snapshots.load(key)
         events = detect_changes(product, previous, snapshot)
 
+        # --- Confirmation d'un changement ---------------------------------
+        # Un changement n'est jamais notifié sur une seule lecture : on
+        # relit la page pour écarter les pages temporairement différentes
+        # (bannière, test A/B, rendu partiel, état qui oscille).
+        if events and previous is not None and self._settings.confirm_changes:
+            confirmed, second = await self._confirm(product, snapshot)
+            if not confirmed:
+                await self._report_unstable(product, previous, snapshot, second)
+                return previous          # l'état précédent est conservé
+            snapshot = second or snapshot
+
         await self._bus.publish(
             Event(
                 EventType.CHECK_COMPLETED,
@@ -253,11 +334,14 @@ class MonitorEngine:
                 log.alert("%s — %s : %s → %s",
                           product.name, change.change_type.value,
                           change.old_value or "—", change.new_value or "—")
+                payload = {
+                    "product": product, "change": change, "snapshot": snapshot,
+                }
+                evidence = self._store_evidence(product, change, snapshot)
+                if evidence:
+                    payload["evidence_path"] = evidence
                 await self._bus.publish(
-                    Event(
-                        EventType.CHANGE_DETECTED,
-                        {"product": product, "change": change, "snapshot": snapshot},
-                    )
+                    Event(EventType.CHANGE_DETECTED, payload)
                 )
 
         await self._snapshots.save(key, snapshot)

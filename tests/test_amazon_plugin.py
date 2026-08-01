@@ -200,17 +200,37 @@ def test_price_with_thousands_separator(monitor, product):
     assert monitor.parse(html, product).price == "1234,56 €"
 
 
-def test_seller_change_alone_does_not_change_the_hash(monitor, product):
-    """Amazon fait tourner ses vendeurs : cela ne doit pas alerter."""
-    template = """
-      <div id="corePrice_feature_div"><span class="a-offscreen">189,99 €</span></div>
-      <div id="merchant-info">Vendu par {seller}</div>
-      <input id="add-to-cart-button" value="Ajouter au panier">
-    """
-    first = monitor.parse(page(template.format(seller="Amazon.fr")), product)
-    second = monitor.parse(page(template.format(seller="Boutique Tierce")), product)
+SELLER_TEMPLATE = """
+  <div id="corePrice_feature_div"><span class="a-offscreen">189,99 €</span></div>
+  <div id="merchant-info">Vendu par {seller}</div>
+  <input id="add-to-cart-button" value="Ajouter au panier">
+"""
+
+
+def test_seller_rotation_within_the_same_kind_is_silent(monitor, product):
+    """Deux revendeurs tiers différents : même état, donc aucune alerte."""
+    first = monitor.parse(page(SELLER_TEMPLATE.format(seller="Boutique A")), product)
+    second = monitor.parse(page(SELLER_TEMPLATE.format(seller="Boutique B")), product)
+
     assert first.content_hash == second.content_hash
     assert first.details["vendeur"] != second.details["vendeur"]
+    assert first.details["etat_amazon"] == AmazonState.THIRD_PARTY_ONLY.value
+
+
+def test_amazon_replaced_by_a_reseller_is_a_real_change(monitor, product):
+    """Amazon qui laisse la place à un revendeur EST un changement réel.
+
+    Ce n'est pas un faux positif : c'est exactement ce que la demande
+    « Amazon absent mais revendeur présent » cherche à faire remonter.
+    """
+    by_amazon = monitor.parse(page(SELLER_TEMPLATE.format(seller="Amazon.fr")), product)
+    by_reseller = monitor.parse(
+        page(SELLER_TEMPLATE.format(seller="Boutique Tierce")), product
+    )
+
+    assert by_amazon.details["etat_amazon"] == AmazonState.AVAILABLE.value
+    assert by_reseller.details["etat_amazon"] == AmazonState.THIRD_PARTY_ONLY.value
+    assert by_amazon.content_hash != by_reseller.content_hash
 
 
 def test_price_change_does_change_the_hash(monitor, product):

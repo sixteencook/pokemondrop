@@ -28,6 +28,7 @@ def _to_domain(row: AlertRow) -> AlertRecord:
         price=row.price,
         url=row.url,
         screenshot_path=row.screenshot_path,
+        evidence_path=row.evidence_path,
         notified=row.notified,
         created_at=row.created_at,
     )
@@ -45,6 +46,7 @@ class AlertRepository:
         new_value: Optional[str],
         price: Optional[str],
         url: str,
+        evidence_path: Optional[str] = None,
     ) -> int:
         """Enregistre l'alerte (notified=False) et retourne son id."""
         async with self._sessions() as session:
@@ -55,6 +57,7 @@ class AlertRepository:
                 new_value=new_value,
                 price=price,
                 url=url,
+                evidence_path=evidence_path,
             )
             session.add(row)
             await session.commit()

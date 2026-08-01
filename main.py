@@ -167,6 +167,7 @@ async def run() -> int:
         engine = MonitorEngine(
             registry, bus, snapshots_repo, defaults,
             product_provider=products_repo.list_all,
+            evidence_dir=settings.evidence_dir,
         )
 
         # --- Découverte + Intelligence produit -------------------------------

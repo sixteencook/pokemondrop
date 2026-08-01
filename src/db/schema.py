@@ -106,6 +106,8 @@ class AlertRow(Base):
     price: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     url: Mapped[str] = mapped_column(Text, default="")
     screenshot_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    #: HTML archivé au moment de la décision (chemin relatif).
+    evidence_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True

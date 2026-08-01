@@ -35,6 +35,7 @@ class EventType(str, Enum):
     CHECK_COMPLETED = "check_completed"      # un check a abouti (avec ou sans changement)
     CHECK_FAILED = "check_failed"            # échec réseau après épuisement des retries
     BASELINE_RECORDED = "baseline_recorded"  # premier passage d'un produit (timeline)
+    CHECK_UNSTABLE = "check_unstable"        # lectures contradictoires : aucune alerte
     CHANGE_DETECTED = "change_detected"      # un changement significatif (→ alerte)
     NEW_PRODUCT_DISCOVERED = "new_product_discovered"   # fiche inédite trouvée
     DISCOVERY_SCAN_COMPLETED = "discovery_scan_completed"

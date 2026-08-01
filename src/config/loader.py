@@ -59,6 +59,9 @@ def load_config(path: Path) -> tuple[GlobalSettings, list[ProductConfig]]:
         request_timeout=int(defaults_raw.get("request_timeout", 15)),
         max_retries=int(defaults_raw.get("max_retries", 3)),
         retry_backoff=int(defaults_raw.get("retry_backoff", 5)),
+        confirm_changes=bool(defaults_raw.get("confirm_changes", True)),
+        confirmation_delay=max(0, int(defaults_raw.get("confirmation_delay", 4))),
+        keep_evidence=bool(defaults_raw.get("keep_evidence", True)),
     )
 
     products_raw = raw.get("products") or []

@@ -37,6 +37,10 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS ix_catalog_products_model_number "
         "ON catalog_products (model_number)",
     ],
+    # v3 — archivage du HTML ayant motivé une alerte.
+    3: [
+        "ALTER TABLE alerts ADD COLUMN evidence_path TEXT",
+    ],
 }
 
 
