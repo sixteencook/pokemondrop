@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -40,7 +40,8 @@ from bs4 import BeautifulSoup
 from src.models import Availability
 from src.monitors.generic import normalise
 
-from . import keywords
+from . import keywords, marketplace
+from .marketplace import PageLocale
 
 
 class AmazonState(str, Enum):
@@ -109,10 +110,18 @@ STATE_LABELS: dict[AmazonState, str] = {
 # --------------------------------------------------------------------- #
 
 #: Du plus étroit au plus large. Le premier conteneur exploitable gagne.
-SCOPE_SELECTORS: tuple[tuple[str, str], ...] = (
-    ("buy box", "#desktop_buybox, #buybox, #qualifiedBuybox, #buyBoxAccordion"),
-    ("bloc achat", "#rightCol, #addToCart_feature_div, #desktop_qualifiedBuyBox"),
-    ("fiche produit", "#ppd, #dp-container, #centerCol, #dp"),
+#:
+#: Les sélecteurs sont énumérés un par un — et non regroupés en une seule
+#: chaîne — afin de pouvoir dire ensuite *lequel exactement* a fourni le
+#: périmètre retenu. Une page Amazon porte souvent plusieurs blocs d'achat
+#: (buy box principale, offre d'occasion, encart « autres vendeurs ») :
+#: savoir lequel a servi est indispensable pour comprendre un statut.
+SCOPE_SELECTORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("buy box", ("#desktop_buybox", "#buybox", "#qualifiedBuybox",
+                 "#buyBoxAccordion")),
+    ("bloc achat", ("#rightCol", "#addToCart_feature_div",
+                    "#desktop_qualifiedBuyBox")),
+    ("fiche produit", ("#ppd", "#dp-container", "#centerCol", "#dp")),
 )
 
 #: Zones qui polluent l'analyse : elles changent en permanence sans que le
@@ -209,6 +218,8 @@ class BuyBox:
     variation: Optional[str] = None
     edition: Optional[str] = None
     has_buy_box: bool = False
+    #: Sélecteur exact du bouton d'achat trouvé, quand il y en a un.
+    buy_selector: Optional[str] = None
 
     @property
     def sold_by_amazon(self) -> bool:
@@ -248,11 +259,89 @@ class Confidence:
         ) or "aucun indice"
 
 
+@dataclass(frozen=True)
+class TextSource:
+    """Un fragment de page soumis à la classification, avec sa provenance.
+
+    C'est ce qui permet de répondre à « quel sélecteur exact a décidé de
+    l'état ? » : la classification ne travaille plus sur un texte agrégé,
+    mais sur une liste de fragments identifiés.
+    """
+
+    origin: str      # boutons | disponibilité | périmètre
+    selector: str    # sélecteur CSS exact, ou description de l'élément
+    text: str        # normalisé, sert à la comparaison
+    excerpt: str     # texte d'origine, pour la lecture humaine
+
+
+@dataclass(frozen=True)
+class ScopeCandidate:
+    """Un bloc d'achat envisagé comme périmètre d'analyse."""
+
+    label: str                     # buy box | bloc achat | fiche produit
+    selector: str                  # sélecteur exact ayant trouvé le bloc
+    identifier: str                # div#desktop_buybox
+    material: tuple[str, ...] = () # sélecteurs décisifs trouvés dedans
+    retained: bool = False
+    reason: str = ""
+
+    def describe(self) -> str:
+        mark = "RETENU" if self.retained else "écarté"
+        return f"{self.identifier} [{self.label}] {mark} — {self.reason}"
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """Le fragment précis qui a produit l'état final."""
+
+    origin: str = ""
+    selector: str = ""
+    markers: tuple[str, ...] = ()
+    excerpt: str = ""
+
+    @property
+    def known(self) -> bool:
+        return bool(self.selector)
+
+    def describe(self) -> str:
+        if not self.known:
+            return "aucun (aucun mot-clé reconnu)"
+        markers = ", ".join(self.markers) or "—"
+        return f"{self.selector} ({self.origin}) : « {markers} »"
+
+
+@dataclass
+class InvitationProbe:
+    """Présence — et sort — du bouton « Demande d'invitation ».
+
+    Ce bouton est le signal le plus important du projet : quand il existe
+    dans la page mais ne ressort pas dans l'état final, il faut pouvoir
+    dire pourquoi sans relire le HTML à la main.
+    """
+
+    present: bool = False
+    markers: tuple[str, ...] = ()
+    locations: tuple[str, ...] = ()
+    survived_noise: bool = False
+    in_scope: bool = False
+    used: bool = False
+    reason: str = ""
+
+    def describe(self) -> str:
+        if not self.present:
+            return "absent du DOM"
+        where = ", ".join(self.locations) or "emplacement non localisé"
+        return f"présent ({where}) — {self.reason}"
+
+
 @dataclass
 class PageAnalysis:
     """Analyse complète d'une page Amazon, entièrement traçable."""
 
     state: AmazonState = AmazonState.UNKNOWN
+    #: État issu de la classification, AVANT déclassement éventuel par la
+    #: confiance ou par le garde-fou de localisation.
+    classified_state: AmazonState = AmazonState.UNKNOWN
     title: Optional[str] = None
     buttons: list[str] = field(default_factory=list)
     ignored_buttons: list[str] = field(default_factory=list)
@@ -262,10 +351,28 @@ class PageAnalysis:
     reason: str = ""
     matched: tuple[str, ...] = ()
     downgraded: bool = False
+    #: Localisation réellement servie par la page.
+    locale: PageLocale = field(default_factory=PageLocale)
+    #: Tous les blocs d'achat examinés, retenu comme écartés.
+    scope_candidates: tuple[ScopeCandidate, ...] = ()
+    #: Sélecteur exact ayant déterminé l'état.
+    evidence: Evidence = field(default_factory=Evidence)
+    #: Sort réservé au bouton « Demande d'invitation ».
+    invitation: InvitationProbe = field(default_factory=InvitationProbe)
+    #: État négatif écarté parce que la page n'était pas servie pour le bon
+    #: pays de livraison.
+    locale_blocked: bool = False
 
     @property
     def inconclusive(self) -> bool:
         return self.state in INCONCLUSIVE_STATES
+
+    @property
+    def retained_scope(self) -> Optional[ScopeCandidate]:
+        return next(
+            (candidate for candidate in self.scope_candidates if candidate.retained),
+            None,
+        )
 
     @property
     def availability(self) -> Availability:
@@ -293,8 +400,18 @@ class PageAnalysis:
 # Analyse                                                                #
 # --------------------------------------------------------------------- #
 
-def analyse(html: str, min_confidence: int = 60) -> PageAnalysis:
-    """Lit une page Amazon et rend une analyse motivée."""
+def analyse(
+    html: str,
+    min_confidence: int = 60,
+    url: str = "",
+    enforce_delivery_country: bool = True,
+) -> PageAnalysis:
+    """Lit une page Amazon et rend une analyse motivée.
+
+    `url` sert à identifier la place de marché ; `enforce_delivery_country`
+    active le refus de conclure au négatif quand la page a été servie pour
+    un autre pays de livraison que celui de la place de marché.
+    """
     result = PageAnalysis()
 
     try:
@@ -311,29 +428,48 @@ def analyse(html: str, min_confidence: int = 60) -> PageAnalysis:
     if blocked is not None:
         result.state = blocked
         result.reason = f"page non exploitable ({STATE_LABELS[blocked]})"
+        result.locale = marketplace.detect(soup, url)
+        result.invitation.reason = "page non analysée (contenu non exploitable)"
         return result
 
-    # 2. Périmètre : le plus petit conteneur pertinent, nettoyé du bruit.
+    # 2. Localisation SERVIE par la page : place de marché, langue et
+    #    surtout pays de livraison. Lue avant tout nettoyage, car le glow
+    #    « Livrer à … » vit dans la barre de navigation, elle-même retirée
+    #    comme bruit à l'étape suivante.
+    result.locale = marketplace.detect(soup, url)
+
+    # 3. Sort du bouton « Demande d'invitation » : repéré et marqué sur le
+    #    DOM intact, pour pouvoir dire ensuite ce qu'il est devenu.
+    result.invitation = _probe_invitation(soup, full_text)
+
+    # 4. Périmètre : le plus petit conteneur pertinent, nettoyé du bruit.
     _strip_noise(soup)
-    scope, result.scope = _resolve_scope(soup)
+    result.invitation.survived_noise = bool(_marked_nodes(soup))
+
+    scope, result.scope, result.scope_candidates = _resolve_scope(soup)
+    result.invitation.in_scope = bool(_marked_nodes(scope))
 
     result.title = _first_text(soup, _TITLE_SELECTORS)
-    result.buttons, result.ignored_buttons = _action_labels(scope)
+    labels = _action_labels(scope)
+    result.buttons = [label.excerpt for label in labels if label.origin == "boutons"]
+    result.ignored_buttons = [
+        label.excerpt for label in labels if label.origin == "ignoré"
+    ]
     result.buy_box = _read_buy_box(scope, soup)
 
-    scope_text = normalise(scope.get_text(" ", strip=True))
-    buttons_text = normalise(" | ".join(result.buttons))
-    availability_text = normalise(" ".join(_all_text(scope, _AVAILABILITY_SELECTORS)))
-
-    result.state, result.matched = _classify(
-        buttons_text, availability_text, scope_text, result.buy_box
-    )
+    sources = _text_sources(scope, labels)
+    result.state, result.matched, result.evidence = _classify(sources, result.buy_box)
+    result.evidence = _refine_evidence(scope, result.evidence)
+    result.classified_state = result.state
     result.reason = (
-        f"{', '.join(result.matched)} (périmètre : {result.scope})"
+        f"{', '.join(result.matched)} (périmètre : {result.scope}, "
+        f"sélecteur : {result.evidence.selector or '—'})"
         if result.matched else f"aucun indice dans le périmètre {result.scope}"
     )
 
-    # 3. Confiance : sous le seuil, on refuse de conclure.
+    _explain_invitation(result)
+
+    # 5. Confiance : sous le seuil, on refuse de conclure.
     result.confidence = _score(result, soup)
     if result.confidence.score < min_confidence and not result.inconclusive:
         result.downgraded = True
@@ -343,7 +479,51 @@ def analyse(html: str, min_confidence: int = 60) -> PageAnalysis:
         )
         result.state = AmazonState.UNKNOWN
 
+    # 6. Garde-fou de localisation, appliqué en dernier.
+    if enforce_delivery_country:
+        _guard_delivery_country(result)
+
     return result
+
+
+#: États négatifs : ce sont les seuls que le pays de livraison peut
+#: fabriquer de toutes pièces. Une offre non proposée à la destination
+#: choisie s'affiche « Actuellement indisponible » alors qu'elle est
+#: parfaitement ouverte depuis la France.
+NEGATIVE_STATES: frozenset[AmazonState] = frozenset({
+    AmazonState.OUT_OF_STOCK, AmazonState.UNAVAILABLE, AmazonState.COMING_SOON,
+})
+
+
+def _guard_delivery_country(result: PageAnalysis) -> None:
+    """Refuse un état négatif lu sur une page destinée à un autre pays.
+
+    Le déclenchement demande une destination **connue et différente** de
+    celle attendue. Une page muette sur le sujet — le cas de la plupart
+    des extraits et des pages allégées — ne suffit pas : transformer
+    l'absence d'information en refus de conclure paralyserait la
+    surveillance au lieu de la fiabiliser.
+
+    Les états positifs (invitation, précommande, disponible) ne sont pas
+    concernés : une offre visible malgré une mauvaise destination reste
+    une offre visible.
+    """
+    locale = result.locale
+    if result.state not in NEGATIVE_STATES:
+        return
+    if not locale.delivery_known or locale.delivers_to_expected_country:
+        return
+
+    result.locale_blocked = True
+    result.reason = (
+        f"état « {STATE_LABELS[result.state]} » écarté : page servie pour une "
+        f"livraison en {locale.delivery_country} "
+        f"({locale.delivery_label or 'libellé absent'}) alors que "
+        f"{locale.marketplace_domain} attend {locale.expected_country}. "
+        f"Une offre non proposée à cette destination s'affiche indisponible "
+        f"à tort — aucune conclusion n'est tirée."
+    )
+    result.state = AmazonState.UNKNOWN
 
 
 def _detect_block(html: str, full_text: str) -> Optional[AmazonState]:
@@ -369,69 +549,237 @@ def _strip_noise(soup: BeautifulSoup) -> None:
         pass
 
 
-def _resolve_scope(soup: BeautifulSoup) -> tuple[BeautifulSoup, str]:
-    """Plus petit conteneur exploitable, avec repli sur la page entière."""
+def _resolve_scope(
+    soup: BeautifulSoup,
+) -> tuple[BeautifulSoup, str, tuple[ScopeCandidate, ...]]:
+    """Plus petit conteneur exploitable, avec repli sur la page entière.
+
+    Tous les blocs d'achat rencontrés sont consignés — retenu comme
+    écartés, avec le motif — pour que le choix soit vérifiable après coup.
+    """
+    candidates: list[ScopeCandidate] = []
+    retained: Optional[BeautifulSoup] = None
+    retained_label = "page entière"
+
     for label, selectors in SCOPE_SELECTORS:
-        try:
-            candidates = soup.select(selectors)
-        except Exception:  # noqa: BLE001
-            continue
-        for candidate in candidates:
-            # Un conteneur retenu doit contenir de quoi décider.
-            if _has_decision_material(candidate):
-                return candidate, label
-    return soup, "page entière"
+        for selector in selectors:
+            try:
+                nodes = soup.select(selector)
+            except Exception:  # noqa: BLE001 — sélecteur refusé par le parseur
+                continue
+            for node in nodes:
+                material = _decision_material(node)
+                if retained is None and material:
+                    retained, retained_label = node, label
+                    reason = "premier bloc contenant de quoi décider : " + ", ".join(
+                        material
+                    )
+                else:
+                    reason = (
+                        "un bloc plus étroit a déjà été retenu"
+                        if material else
+                        "ni bouton d'achat, ni disponibilité, ni prix"
+                    )
+                candidates.append(ScopeCandidate(
+                    label=label,
+                    selector=selector,
+                    identifier=_describe(node),
+                    material=material,
+                    retained=node is retained,
+                    reason=reason,
+                ))
+
+    if retained is None:
+        candidates.append(ScopeCandidate(
+            label="page entière",
+            selector="html",
+            identifier="html",
+            retained=True,
+            reason="aucun bloc d'achat exploitable — repli sur la page entière",
+        ))
+        return soup, "page entière", tuple(candidates)
+
+    return retained, retained_label, tuple(candidates)
 
 
-def _has_decision_material(node) -> bool:
-    """Le conteneur porte-t-il un bouton d'achat ou une disponibilité ?"""
+def _decision_material(node) -> tuple[str, ...]:
+    """Sélecteurs décisifs (achat, disponibilité, prix) présents dans un bloc."""
+    found: list[str] = []
     for selector in (*_BUY_SELECTORS, *_AVAILABILITY_SELECTORS, *_PRICE_SELECTORS):
         try:
             if node.select_one(selector) is not None:
-                return True
+                found.append(selector)
         except Exception:  # noqa: BLE001
             continue
-    return False
+    return tuple(found)
+
+
+def _describe(node) -> str:
+    """Identifiant lisible d'un élément : `div#desktop_buybox`, `span.a-color`."""
+    if node is None or not getattr(node, "name", None):
+        return "—"
+    identifier = node.get("id") if hasattr(node, "get") else None
+    if identifier:
+        return f"{node.name}#{identifier}"
+    classes = node.get("class") if hasattr(node, "get") else None
+    if classes:
+        return f"{node.name}.{'.'.join(classes[:2])}"
+    return node.name
+
+
+#: Règles de classification, du plus spécifique au plus général.
+#:
+#: Chaque règle nomme les provenances qu'elle accepte, dans l'ordre : une
+#: mention de rupture n'a pas le même poids selon qu'elle vient du bloc
+#: `#availability` ou d'une phrase perdue dans le périmètre.
+_RULES: tuple[tuple[AmazonState, tuple[str, ...], tuple[str, ...]], ...] = (
+    (AmazonState.INVITATION, keywords.INVITATION,
+     ("boutons", "disponibilité", "périmètre")),
+    (AmazonState.PREORDER, keywords.PREORDER, ("boutons", "disponibilité")),
+    # La mention de rupture prime sur un bouton resté en place.
+    (AmazonState.OUT_OF_STOCK, keywords.OUT_OF_STOCK, ("disponibilité",)),
+    (AmazonState.AVAILABLE, keywords.AVAILABLE, ("boutons", "disponibilité")),
+    (AmazonState.OUT_OF_STOCK, keywords.OUT_OF_STOCK, ("périmètre",)),
+    (AmazonState.COMING_SOON, keywords.COMING_SOON,
+     ("disponibilité", "périmètre")),
+    (AmazonState.UNAVAILABLE, keywords.UNAVAILABLE,
+     ("disponibilité", "périmètre")),
+)
 
 
 def _classify(
-    buttons_text: str, availability_text: str, scope_text: str, buy_box: BuyBox
-) -> tuple[AmazonState, tuple[str, ...]]:
-    """Du plus spécifique au plus général."""
-    hits = _hits(keywords.INVITATION, buttons_text, availability_text, scope_text)
-    if hits:
-        return AmazonState.INVITATION, hits
+    sources: tuple[TextSource, ...], buy_box: BuyBox
+) -> tuple[AmazonState, tuple[str, ...], Evidence]:
+    """Applique les règles et retourne l'état, ses indices et leur origine."""
+    for state, patterns, origins in _RULES:
+        evidence = _first_match(sources, patterns, origins)
 
-    hits = _hits(keywords.PREORDER, buttons_text, availability_text)
-    if hits:
-        return AmazonState.PREORDER, hits
+        # Un bouton d'achat présent vaut disponibilité, même sans libellé
+        # reconnaissable (Amazon en change régulièrement la formulation).
+        if (
+            evidence is None
+            and state is AmazonState.AVAILABLE
+            and buy_box.has_buy_box
+        ):
+            evidence = Evidence(
+                origin="buy box",
+                selector=buy_box.buy_selector or "bouton d'achat",
+                markers=("buy box",),
+                excerpt="bouton d'achat présent dans le périmètre",
+            )
 
-    # La mention de rupture prime sur un bouton resté en place.
-    hits = _hits(keywords.OUT_OF_STOCK, availability_text)
-    if hits:
-        return AmazonState.OUT_OF_STOCK, hits
+        if evidence is None:
+            continue
 
-    hits = _hits(keywords.AVAILABLE, buttons_text, availability_text)
-    if hits or buy_box.has_buy_box:
-        indices = hits or ("buy box",)
         # Achetable, mais pas vendu par Amazon : information utile.
-        if buy_box.seller and not buy_box.sold_by_amazon:
-            return AmazonState.THIRD_PARTY_ONLY, (*indices, "vendeur tiers")
-        return AmazonState.AVAILABLE, indices
+        if (
+            state is AmazonState.AVAILABLE
+            and buy_box.seller
+            and not buy_box.sold_by_amazon
+        ):
+            markers = (*evidence.markers, "vendeur tiers")
+            return (
+                AmazonState.THIRD_PARTY_ONLY,
+                markers,
+                replace(evidence, markers=markers),
+            )
 
-    hits = _hits(keywords.OUT_OF_STOCK, scope_text)
-    if hits:
-        return AmazonState.OUT_OF_STOCK, hits
+        return state, evidence.markers, evidence
 
-    hits = _hits(keywords.COMING_SOON, availability_text, scope_text)
-    if hits:
-        return AmazonState.COMING_SOON, hits
+    return AmazonState.UNKNOWN, (), Evidence()
 
-    hits = _hits(keywords.UNAVAILABLE, availability_text, scope_text)
-    if hits:
-        return AmazonState.UNAVAILABLE, hits
 
-    return AmazonState.UNKNOWN, ()
+def _first_match(
+    sources: tuple[TextSource, ...],
+    patterns: tuple[str, ...],
+    origins: tuple[str, ...],
+) -> Optional[Evidence]:
+    """Premier fragment, dans l'ordre des provenances, portant un mot-clé."""
+    for origin in origins:
+        for source in sources:
+            if source.origin != origin:
+                continue
+            markers = tuple(pattern for pattern in patterns if pattern in source.text)
+            if markers:
+                return Evidence(
+                    origin=source.origin,
+                    selector=source.selector,
+                    markers=markers,
+                    excerpt=source.excerpt,
+                )
+    return None
+
+
+def _refine_evidence(scope, evidence: Evidence) -> Evidence:
+    """Descend jusqu'à l'élément exact porteur du mot-clé décisif.
+
+    Un mot-clé trouvé dans le texte du périmètre désigne au départ tout le
+    bloc (`div#desktop_buybox`), ce qui n'aide pas : sur une fiche réelle,
+    le libellé d'invitation vit dans un `span#hdp-invite-button-announce`
+    qu'aucune règle ne cite. On retrouve donc l'élément le plus profond qui
+    le porte, pour que le sélecteur annoncé soit celui du HTML.
+    """
+    if not evidence.known or evidence.origin != "périmètre" or not evidence.markers:
+        return evidence
+
+    marker = evidence.markers[0]
+    node = _innermost_carrier(scope, marker)
+    if node is None:
+        return evidence
+
+    raw = " ".join(node.get_text(" ", strip=True).split()) or (node.get("value") or "")
+    return replace(
+        evidence,
+        selector=_locate(node),
+        excerpt=" ".join(raw.split())[:120] or evidence.excerpt,
+    )
+
+
+def _innermost_carrier(scope, marker: str):
+    """Élément le plus profond dont le texte ou un attribut porte `marker`."""
+    try:
+        for node in scope.find_all(string=True):
+            parent = node.parent
+            if parent is None or parent.name in _NON_VISIBLE_TAGS:
+                continue
+            if marker in normalise(str(node)):
+                return parent
+
+        for tag in scope.find_all(attrs={"aria-label": True}):
+            if marker in normalise(tag.get("aria-label") or ""):
+                return tag
+
+        for tag in scope.find_all("input"):
+            if marker in normalise(tag.get("value") or ""):
+                return tag
+    except Exception:  # noqa: BLE001 — affinage : jamais critique
+        return None
+    return None
+
+
+def _text_sources(scope, labels: tuple[TextSource, ...]) -> tuple[TextSource, ...]:
+    """Fragments soumis à la classification, chacun avec sa provenance."""
+    sources: list[TextSource] = [
+        label for label in labels if label.origin == "boutons"
+    ]
+
+    for selector in _AVAILABILITY_SELECTORS:
+        try:
+            nodes = scope.select(selector)
+        except Exception:  # noqa: BLE001
+            continue
+        for node in nodes:
+            raw = " ".join(node.get_text(" ", strip=True).split())
+            if raw:
+                sources.append(TextSource(
+                    "disponibilité", selector, normalise(raw), raw[:120]
+                ))
+
+    raw_scope = " ".join(scope.get_text(" ", strip=True).split())
+    sources.append(TextSource(
+        "périmètre", _describe(scope), normalise(raw_scope), raw_scope[:120]
+    ))
+    return tuple(sources)
 
 
 def _score(analysis: PageAnalysis, soup: BeautifulSoup) -> Confidence:
@@ -469,7 +817,12 @@ def _read_buy_box(scope, soup: BeautifulSoup) -> BuyBox:
     if raw_price:
         box.price, box.currency = _parse_price(raw_price)
 
-    box.has_buy_box = any(_select_one(scope, selector) for selector in _BUY_SELECTORS)
+    box.buy_selector = next(
+        (selector for selector in _BUY_SELECTORS
+         if _select_one(scope, selector) is not None),
+        None,
+    )
+    box.has_buy_box = box.buy_selector is not None
 
     merchant_text = " ".join(
         _all_text(scope, _MERCHANT_SELECTORS) or _all_text(soup, _MERCHANT_SELECTORS)
@@ -511,23 +864,33 @@ def is_meaningful_label(text: str) -> bool:
     return True
 
 
-def _action_labels(scope) -> tuple[list[str], list[str]]:
-    """Libellés d'action retenus, et libellés écartés (pour le débogage)."""
-    kept: list[str] = []
-    ignored: list[str] = []
+def _action_labels(scope) -> tuple[TextSource, ...]:
+    """Libellés d'action, chacun avec le sélecteur ou l'élément d'origine.
 
-    def offer(raw: Optional[str]) -> None:
+    L'origine vaut « boutons » pour un libellé retenu et « ignoré » pour un
+    libellé écarté : c'est ce qui permet, plus loin, de dire qu'un texte
+    existait bien mais n'a pas participé à la décision.
+    """
+    kept: dict[str, TextSource] = {}
+    ignored: dict[str, TextSource] = {}
+
+    def offer(raw: Optional[str], selector: str) -> None:
         text = " ".join((raw or "").split())
         if not text:
             return
-        (kept if is_meaningful_label(text) else ignored).append(text)
+        bucket, origin = (
+            (kept, "boutons") if is_meaningful_label(text) else (ignored, "ignoré")
+        )
+        bucket.setdefault(
+            text, TextSource(origin, selector, normalise(text), text)
+        )
 
     for selector in _BUY_SELECTORS:
         tag = _select_one(scope, selector)
         if tag is None:
             continue
         offer(tag.get("value") or tag.get("aria-label")
-              or tag.get_text(" ", strip=True))
+              or tag.get_text(" ", strip=True), selector)
 
     # Seuls les boutons réels sont examinés : les champs cachés portent
     # des jetons, jamais des libellés.
@@ -541,18 +904,135 @@ def _action_labels(scope) -> tuple[list[str], list[str]]:
         controls = []
 
     for tag in controls:
-        offer(tag.get("value") if tag.name == "input" else None)
-        offer(tag.get("aria-label"))
+        origin = _describe(tag)
+        offer(tag.get("value") if tag.name == "input" else None, origin)
+        offer(tag.get("aria-label"), origin)
         if tag.name != "input":
-            offer(tag.get_text(" ", strip=True))
+            offer(tag.get_text(" ", strip=True), origin)
 
-    for text in _all_text(scope, _AVAILABILITY_SELECTORS):
-        offer(text)
+    for selector in _AVAILABILITY_SELECTORS:
+        for text in _all_text(scope, (selector,)):
+            offer(text, selector)
 
-    return (
-        list(dict.fromkeys(kept))[:8],
-        list(dict.fromkeys(ignored))[:8],
-    )
+    return (*list(kept.values())[:8], *list(ignored.values())[:8])
+
+
+# --------------------------------------------------------------------- #
+# Sonde « Demande d'invitation »                                         #
+# --------------------------------------------------------------------- #
+
+#: Attribut posé sur les éléments porteurs d'un libellé d'invitation.
+#: Il survit — ou non — au nettoyage du bruit et à la réduction du
+#: périmètre : c'est ce qui permet de dire ce qu'est devenu le bouton.
+INVITATION_MARK = "data-dm-invitation"
+
+#: Éléments dont le contenu textuel n'est pas du texte affiché.
+_NON_VISIBLE_TAGS = frozenset({"script", "style", "noscript", "template"})
+
+
+def _probe_invitation(soup: BeautifulSoup, full_text: str) -> InvitationProbe:
+    """Repère les libellés d'invitation sur le DOM encore intact.
+
+    Le texte visible ne suffit pas : Amazon place régulièrement le libellé
+    dans un `aria-label` ou dans la `value` d'un bouton. Les trois sont
+    donc examinés.
+    """
+    markers, locations = _mark_invitation_nodes(soup)
+    markers = tuple(dict.fromkeys((*_hits(keywords.INVITATION, full_text), *markers)))
+
+    if not markers:
+        return InvitationProbe(present=False, reason="absent du DOM")
+    return InvitationProbe(present=True, markers=markers, locations=locations)
+
+
+def _mark_invitation_nodes(soup: BeautifulSoup) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Marque les éléments portant un libellé d'invitation, et les décrit."""
+    located: list[str] = []
+    found: list[str] = []
+
+    def mark(tag, markers: tuple[str, ...]) -> None:
+        if tag is None or not getattr(tag, "name", None):
+            return
+        if tag.name in _NON_VISIBLE_TAGS:
+            return
+        tag[INVITATION_MARK] = "1"
+        located.append(_locate(tag))
+        found.extend(markers)
+
+    try:
+        for node in soup.find_all(string=True):
+            parent = node.parent
+            if parent is None or parent.name in _NON_VISIBLE_TAGS:
+                continue
+            markers = _hits(keywords.INVITATION, normalise(str(node)))
+            if markers:
+                mark(parent, markers)
+
+        for tag in soup.find_all(attrs={"aria-label": True}):
+            markers = _hits(keywords.INVITATION, normalise(tag.get("aria-label") or ""))
+            if markers:
+                mark(tag, markers)
+
+        for tag in soup.find_all("input"):
+            markers = _hits(keywords.INVITATION, normalise(tag.get("value") or ""))
+            if markers:
+                mark(tag, markers)
+    except Exception:  # noqa: BLE001 — DOM inattendu : la sonde n'est pas critique
+        pass
+
+    return tuple(dict.fromkeys(found)), tuple(dict.fromkeys(located))[:5]
+
+
+def _locate(tag) -> str:
+    """Emplacement lisible d'un élément : `div#autre-bloc > span`.
+
+    Un `<span>` nu ne dit rien ; le premier ancêtre identifié situe le
+    libellé dans la page et suffit à retrouver le bloc fautif.
+    """
+    own = _describe(tag)
+    if tag.get("id"):
+        return own
+    for parent in tag.parents:
+        if getattr(parent, "get", None) is None:
+            continue
+        if parent.get("id") or parent.get("class"):
+            return f"{_describe(parent)} > {own}"
+    return own
+
+
+def _marked_nodes(node) -> list:
+    """Éléments d'invitation encore présents sous `node`."""
+    try:
+        return node.select(f"[{INVITATION_MARK}]")
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _explain_invitation(result: PageAnalysis) -> None:
+    """Dit pourquoi le bouton d'invitation a — ou n'a pas — servi."""
+    probe = result.invitation
+    if not probe.present:
+        probe.reason = "absent du DOM"
+        return
+
+    probe.used = result.classified_state is AmazonState.INVITATION
+    if probe.used:
+        probe.reason = "retenu : c'est lui qui fixe l'état"
+    elif not probe.survived_noise:
+        probe.reason = (
+            "retiré avec le bruit avant analyse (carrousel, recommandations, "
+            "produits sponsorisés, navigation ou pied de page)"
+        )
+    elif not probe.in_scope:
+        probe.reason = (
+            f"présent dans la page mais hors du périmètre retenu "
+            f"({result.scope}) — il appartient à un autre bloc"
+        )
+    else:
+        probe.reason = (
+            "dans le périmètre retenu, mais aucun mot-clé d'invitation "
+            "reconnu à la classification (libellé inconnu de keywords.py ?)"
+        )
 
 
 # --------------------------------------------------------------------- #

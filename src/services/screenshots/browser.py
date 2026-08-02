@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 
 from src.config import ScreenshotSettings
 from src.utils.logger import get_logger
@@ -29,6 +29,11 @@ CHROMIUM_ARGS = [
     "--disable-features=TranslateUI,BackForwardCache",
     "--mute-audio",
 ]
+
+#: Localisation par défaut du contexte : celle de l'utilisateur du projet.
+#: Un monitor peut la remplacer page par page.
+DEFAULT_LOCALE = "fr-FR"
+DEFAULT_TIMEZONE = "Europe/Paris"
 
 
 class BrowserUnavailable(RuntimeError):
@@ -82,8 +87,19 @@ class BrowserPool:
             return self._browser
 
     @asynccontextmanager
-    async def page(self) -> AsyncIterator[Any]:
-        """Fournit une page neuve dans un contexte isolé, fermé à la sortie."""
+    async def page(
+        self,
+        locale: str | None = None,
+        timezone_id: str | None = None,
+        cookies: Sequence[dict[str, Any]] = (),
+    ) -> AsyncIterator[Any]:
+        """Fournit une page neuve dans un contexte isolé, fermé à la sortie.
+
+        `locale`, `timezone_id` et `cookies` permettent à un monitor de
+        demander une version localisée précise d'une page : sans eux, le
+        site choisit lui-même une langue et un pays de livraison, et la
+        page rendue n'est pas celle que l'utilisateur voit.
+        """
         browser = await self._ensure_browser()
         context = await browser.new_context(
             viewport={
@@ -91,12 +107,17 @@ class BrowserPool:
                 "height": self._settings.viewport_height,
             },
             device_scale_factor=self._settings.device_scale_factor,
-            locale="fr-FR",
-            timezone_id="Europe/Paris",
+            locale=locale or DEFAULT_LOCALE,
+            timezone_id=timezone_id or DEFAULT_TIMEZONE,
             reduced_motion="reduce",
             java_script_enabled=True,
         )
         context.set_default_timeout(self._settings.timeout_ms)
+        if cookies:
+            try:
+                await context.add_cookies(list(cookies))
+            except Exception as exc:  # noqa: BLE001 — préférence, pas blocage
+                log.error("Cookies de préférence refusés : %s", exc)
         page = await context.new_page()
         try:
             yield page

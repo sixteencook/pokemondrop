@@ -28,15 +28,19 @@ METADATA = PluginMetadata(
 
 from .discovery import AmazonDiscovery  # noqa: E402
 from .identity import AmazonIdentityStrategy  # noqa: E402
+from .marketplace import PREFERRED, Marketplace, PageLocale  # noqa: E402
 from .monitor import AmazonMonitor  # noqa: E402
 from .parser import AmazonState, analyse, canonical_url, extract_asin  # noqa: E402
 
 __all__ = [
     "METADATA",
+    "PREFERRED",
     "AmazonDiscovery",
     "AmazonIdentityStrategy",
     "AmazonMonitor",
     "AmazonState",
+    "Marketplace",
+    "PageLocale",
     "analyse",
     "canonical_url",
     "extract_asin",

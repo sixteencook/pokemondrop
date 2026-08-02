@@ -38,14 +38,21 @@ class FakeRenderer:
         self._available = available
         self.calls: list[str] = []
         self.cookie_selectors_seen: tuple[str, ...] = ()
+        self.cookies_seen: dict[str, str] = {}
+        self.locale_seen: str | None = None
+        self.timezone_seen: str | None = None
 
     @property
     def available(self) -> bool:
         return self._available
 
-    async def render(self, url: str, cookie_selectors=()) -> str:
+    async def render(self, url: str, cookie_selectors=(), *, cookies=None,
+                     locale=None, timezone=None) -> str:
         self.calls.append(url)
         self.cookie_selectors_seen = tuple(cookie_selectors)
+        self.cookies_seen = dict(cookies or {})
+        self.locale_seen = locale
+        self.timezone_seen = timezone
         if self._fail:
             raise RenderError("échec simulé")
         return self._html

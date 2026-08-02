@@ -13,7 +13,7 @@ Cela permet :
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 
 class RenderError(Exception):
@@ -30,8 +30,22 @@ class HtmlRenderer(Protocol):
     """
 
     async def render(
-        self, url: str, cookie_selectors: Sequence[str] = ()
-    ) -> str: ...
+        self,
+        url: str,
+        cookie_selectors: Sequence[str] = (),
+        *,
+        cookies: Optional[Mapping[str, str]] = None,
+        locale: Optional[str] = None,
+        timezone: Optional[str] = None,
+    ) -> str:
+        """Rend `url` et retourne le DOM obtenu.
+
+        `cookies`, `locale` et `timezone` transportent la localisation
+        demandée par le monitor (langue, devise, pays de livraison). Le
+        contexte navigateur est construit avec ces valeurs afin que la page
+        rendue soit bien celle que l'utilisateur verrait.
+        """
+        ...
 
     @property
     def available(self) -> bool: ...

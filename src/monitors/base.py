@@ -21,12 +21,20 @@ RÉCUPÉRATION EN DEUX TEMPS
 
 L'escalade se contente d'afficher la page comme le ferait un navigateur
 ordinaire : aucune protection n'est contournée.
+
+LOCALISATION DE LA REQUÊTE
+--------------------------
+Certains marchands servent une page différente selon la langue et le pays
+de livraison déduits de la session. Un monitor peut donc décrire, via
+`prepare_request()`, la localisation qu'il souhaite : URL ajustée, en-têtes,
+cookies de préférence, locale du navigateur. Le cœur transporte ce plan
+sans jamais l'interpréter — il ne sait pas ce qu'est une place de marché.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import ClassVar, Optional
 
 import httpx
@@ -56,6 +64,23 @@ class FetchError(Exception):
     """Erreur réseau ou HTTP lors de la récupération d'une page."""
 
 
+def _headers_with_cookies(plan: "RequestPlan") -> dict[str, str]:
+    """En-têtes de la requête, cookies de préférence inclus.
+
+    Les cookies voyagent dans l'en-tête plutôt que par le paramètre
+    `cookies=` de httpx : celui-ci est déprécié pour les requêtes isolées,
+    et le client HTTP est partagé par tous les sites — y déposer un cookie
+    propre à un marchand le ferait fuir vers les autres.
+    """
+    headers = dict(plan.headers or DEFAULT_HEADERS)
+    if not plan.cookies:
+        return headers
+    jar = "; ".join(f"{name}={value}" for name, value in plan.cookies.items())
+    existing = headers.get("Cookie")
+    headers["Cookie"] = f"{existing}; {jar}" if existing else jar
+    return headers
+
+
 @dataclass(frozen=True)
 class FetchResult:
     """Page récupérée, avec la voie empruntée (« http » ou « browser »)."""
@@ -63,6 +88,29 @@ class FetchResult:
     status_code: int
     html: Optional[str]
     source: str
+
+
+@dataclass(frozen=True)
+class RequestPlan:
+    """Comment aller chercher une page, localisation comprise.
+
+    Le cœur se contente de l'appliquer : c'est le plugin qui décide ce que
+    signifient ces valeurs pour son marchand.
+    """
+
+    #: URL réellement appelée. Elle peut différer de l'URL surveillée (ajout
+    #: d'un paramètre de langue, par exemple) ; l'URL stockée, elle, ne
+    #: change pas.
+    url: str
+    headers: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_HEADERS))
+    #: Cookies de préférence (langue, devise…), envoyés en HTTP comme au
+    #: navigateur.
+    cookies: dict[str, str] = field(default_factory=dict)
+    #: Locale et fuseau du contexte navigateur, quand l'escalade a lieu.
+    locale: Optional[str] = None
+    timezone: Optional[str] = None
+    #: Résumé lisible, journalisé par les plugins qui le souhaitent.
+    description: str = ""
 
 
 class BaseMonitor(ABC):
@@ -92,9 +140,19 @@ class BaseMonitor(ABC):
     def can_render(self) -> bool:
         return self._renderer is not None and self._renderer.available
 
+    def prepare_request(self, url: str) -> RequestPlan:
+        """Localisation souhaitée pour cette URL.
+
+        Par défaut : l'URL telle quelle, avec les en-têtes standard. Un
+        plugin peut la surcharger pour exiger une langue, une devise ou un
+        pays de livraison précis.
+        """
+        return RequestPlan(url=url, headers=dict(DEFAULT_HEADERS))
+
     async def check(self, product: ProductConfig) -> ProductSnapshot:
         """Récupère la page du produit et retourne un snapshot de son état."""
-        result = await self._fetch(product.url)
+        plan = self.prepare_request(product.url)
+        result = await self._fetch(plan)
         if result.status_code == 404 or not result.html:
             return ProductSnapshot(page_exists=False)
 
@@ -116,7 +174,7 @@ class BaseMonitor(ABC):
                 "Statut indéterminé pour %s — nouvelle tentative avec le navigateur.",
                 product.name,
             )
-            rendered = await self._render(product.url)
+            rendered = await self._render(plan)
             if rendered is not None:
                 snapshot = self.parse(rendered, product)
                 if snapshot.availability is not Availability.UNKNOWN:
@@ -130,17 +188,18 @@ class BaseMonitor(ABC):
     # Récupération                                                        #
     # ------------------------------------------------------------------ #
 
-    async def _fetch(self, url: str) -> FetchResult:
+    async def _fetch(self, plan: RequestPlan) -> FetchResult:
         """HTTP d'abord, navigateur si le site refuse de servir la page."""
+        url = plan.url
         if self.requires_javascript and self.can_render:
-            html = await self._render(url)
+            html = await self._render(plan)
             if html is None:
                 raise FetchError(f"Rendu navigateur impossible : {url}")
             return FetchResult(200, html, "browser")
 
         try:
             response = await self._client.get(
-                url, headers=DEFAULT_HEADERS, follow_redirects=True
+                url, headers=_headers_with_cookies(plan), follow_redirects=True
             )
         except httpx.TimeoutException as exc:
             raise FetchError(f"Timeout : {url}") from exc
@@ -161,7 +220,7 @@ class BaseMonitor(ABC):
                 "HTTP %s sur %s — bascule automatique sur le navigateur.",
                 response.status_code, url,
             )
-            html = await self._render(url)
+            html = await self._render(plan)
             if html is None:
                 raise FetchError(
                     f"HTTP {response.status_code} puis échec du rendu navigateur : {url}"
@@ -173,12 +232,19 @@ class BaseMonitor(ABC):
 
         return FetchResult(response.status_code, response.text, "http")
 
-    async def _render(self, url: str) -> Optional[str]:
+    async def _render(self, plan: RequestPlan) -> Optional[str]:
         """Rendu navigateur ; retourne None en cas d'échec (jamais d'exception)."""
         if not self.can_render:
             return None
+        url = plan.url
         try:
-            html = await self._renderer.render(url, self.cookie_selectors)
+            html = await self._renderer.render(
+                url,
+                self.cookie_selectors,
+                cookies=plan.cookies or None,
+                locale=plan.locale,
+                timezone=plan.timezone,
+            )
         except RenderError as exc:
             log.error("Rendu navigateur en échec (%s) : %s", url, exc)
             return None

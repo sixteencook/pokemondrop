@@ -13,7 +13,7 @@ refusera aussi au navigateur.
 from __future__ import annotations
 
 import asyncio
-from typing import Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from src.monitors.renderer import RenderError
 from src.services.screenshots.browser import BrowserPool, BrowserUnavailable
@@ -43,7 +43,15 @@ class PlaywrightRenderer:
     def available(self) -> bool:
         return self._enabled and self._unavailable_reason is None
 
-    async def render(self, url: str, cookie_selectors: Sequence[str] = ()) -> str:
+    async def render(
+        self,
+        url: str,
+        cookie_selectors: Sequence[str] = (),
+        *,
+        cookies: Optional[Mapping[str, str]] = None,
+        locale: Optional[str] = None,
+        timezone: Optional[str] = None,
+    ) -> str:
         """Retourne le HTML rendu. Lève RenderError en cas d'échec."""
         if not self.available:
             raise RenderError(
@@ -52,7 +60,11 @@ class PlaywrightRenderer:
 
         async with self._semaphore:
             try:
-                async with self._pool.page() as page:
+                async with self._pool.page(
+                    locale=locale,
+                    timezone_id=timezone,
+                    cookies=_playwright_cookies(cookies, url),
+                ) as page:
                     return await asyncio.wait_for(
                         self._render_page(page, url, cookie_selectors),
                         timeout=(self._timeout_ms / 1000) + 15,
@@ -81,3 +93,19 @@ class PlaywrightRenderer:
             pass
         await dismiss_cookie_banners(page, cookie_selectors)
         return await page.content()
+
+
+def _playwright_cookies(
+    cookies: Optional[Mapping[str, str]], url: str
+) -> tuple[dict[str, Any], ...]:
+    """Traduit des cookies de préférence au format attendu par Playwright.
+
+    La forme `url=` évite d'avoir à deviner domaine et chemin : Playwright
+    les déduit de l'adresse visitée.
+    """
+    if not cookies:
+        return ()
+    return tuple(
+        {"name": name, "value": value, "url": url}
+        for name, value in cookies.items()
+    )
