@@ -21,14 +21,21 @@ import { ScreenshotThumbnail } from "@/components/domain/ScreenshotThumbnail";
 import { EVENT_TYPE_META, formatDateTime } from "@/lib/format";
 import { useWsEvent } from "@/ws/WsProvider";
 
+// Événements métier uniquement : chacun répond à « qu'est-ce qui a changé
+// pour l'acheteur ? ». Les anciens « Bouton modifié » / « Page modifiée »
+// ne sont plus produits par le moteur.
 const CHANGE_TYPES = [
   ["preorder_opened", "Précommande ouverte"],
+  ["invitation_opened", "Invitation ouverte"],
   ["back_in_stock", "Retour en stock"],
-  ["product_appeared", "Fiche détectée"],
+  ["went_out_of_stock", "Rupture de stock"],
+  ["seller_became_official", "Vendeur officiel de retour"],
+  ["seller_left_buybox", "Vendeur officiel absent"],
+  ["product_appeared", "Produit découvert"],
+  ["product_delisted", "Fiche retirée"],
   ["price_appeared", "Prix détecté"],
   ["price_changed", "Prix modifié"],
-  ["button_changed", "Bouton modifié"],
-  ["status_changed", "Statut modifié"],
+  ["status_changed", "Disponibilité modifiée"],
 ] as const;
 
 const LABELS = Object.fromEntries(CHANGE_TYPES) as Record<string, string>;

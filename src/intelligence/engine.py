@@ -25,6 +25,7 @@ regroupement devient automatique.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
@@ -42,7 +43,7 @@ from src.intelligence.entities import (
 from src.intelligence.crosssite import CrossSiteIntelligence, CrossSiteReport
 from src.intelligence.identity import ProductIdentity
 from src.intelligence.matching import MatchingEngine, MatchResult
-from src.intelligence.search import CrossSiteSearchCoordinator, SearchQuery
+from src.intelligence.search import CrossSiteSearchCoordinator
 from src.intelligence.strategies import IdentityContext, IdentityStrategyRegistry
 from src.models import Priority
 from src.utils.logger import get_logger
@@ -135,6 +136,7 @@ class ProductIntelligenceEngine:
         `html` permet aux stratégies d'identité (données structurées, et
         demain OCR ou vision) d'extraire davantage de clés.
         """
+        started = time.perf_counter()
         draft = self._to_draft(discovered, identifiers, attributes)
         draft = await self._enrich_identity(draft, discovered, html, identity)
         candidates = await self._catalog.candidates_for(draft)
@@ -161,14 +163,17 @@ class ProductIntelligenceEngine:
             created_offer=created_offer, match=match, suggestion_id=suggestion_id,
         )
 
+        duration_ms = int((time.perf_counter() - started) * 1000)
         if created_product:
             await self._bus.publish(Event(EventType.CATALOG_PRODUCT_CREATED, {
                 "product": product, "offer": offer, "source": source,
+                "duration_ms": duration_ms,
             }))
         if created_offer:
             await self._bus.publish(Event(EventType.CATALOG_OFFER_LINKED, {
                 "product": product, "offer": offer, "match": match,
                 "source": source, "summary": outcome.summary,
+                "duration_ms": duration_ms,
             }))
 
         log.check(

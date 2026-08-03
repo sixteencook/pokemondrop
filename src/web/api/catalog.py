@@ -20,6 +20,7 @@ from src.web.schemas.catalog import (
     ProductIdentityOut,
     SearchAttemptOut,
 )
+from src.web.schemas.observability import ProductStoryOut
 from src.web.state import AppContext
 
 router = APIRouter(prefix="/catalog", tags=["Catalogue"])
@@ -284,3 +285,24 @@ async def add_manual(
     return CatalogProductOut.from_domain(
         outcome.product, await ctx.offers.for_product(outcome.product.uuid)
     )
+
+
+@router.get(
+    "/products/{product_uuid}/story",
+    response_model=ProductStoryOut,
+    summary="Histoire complète d'un produit",
+    description="Timeline fusionnée (monitoring, découverte, intelligence), "
+                "propagation entre marchands, métriques métier, identité "
+                "connue et recherches inter-sites. Répond à « que s'est-il "
+                "passé pour ce produit ? » et « quel marchand publie ses "
+                "fiches le plus tôt ? ».",
+)
+async def product_story(
+    product_uuid: str, ctx: AppContext = Depends(get_ctx)
+) -> ProductStoryOut:
+    if ctx.story is None:  # pragma: no cover — contexte incomplet
+        raise HTTPException(503, "Service d'historique indisponible.")
+    data = await ctx.story.story(product_uuid)
+    if data is None:
+        raise HTTPException(404, "Produit canonique introuvable.")
+    return ProductStoryOut(**data)

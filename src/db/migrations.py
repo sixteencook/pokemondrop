@@ -41,6 +41,39 @@ MIGRATIONS: dict[int, list[str]] = {
     3: [
         "ALTER TABLE alerts ADD COLUMN evidence_path TEXT",
     ],
+    # v4 — observabilité. Les trois colonnes de `checks` sont remplies par
+    # une écriture qui a lieu de toute façon : coût nul pour le cycle.
+    # `engine_events` est créée par create_all sur les bases neuves ; le
+    # CREATE TABLE ci-dessous couvre les bases déjà en service.
+    4: [
+        "ALTER TABLE checks ADD COLUMN fetch_source VARCHAR(10)",
+        "ALTER TABLE checks ADD COLUMN http_status INTEGER",
+        "ALTER TABLE checks ADD COLUMN confidence INTEGER",
+        """
+        CREATE TABLE IF NOT EXISTS engine_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope VARCHAR(20) NOT NULL,
+            source VARCHAR(50) NOT NULL,
+            kind VARCHAR(30) NOT NULL,
+            severity VARCHAR(10) DEFAULT 'info',
+            product_uuid VARCHAR(32),
+            detail TEXT DEFAULT '',
+            created_at DATETIME NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_engine_events_created_at "
+        "ON engine_events (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_engine_events_source "
+        "ON engine_events (source)",
+        "CREATE INDEX IF NOT EXISTS ix_engine_events_kind "
+        "ON engine_events (kind)",
+    ],
+    # v5 — durée des phases du moteur (captures, Discovery, Intelligence).
+    # Le temps HTTP et le temps navigateur, eux, se déduisent déjà de
+    # `checks.response_time_ms` croisé avec `checks.fetch_source`.
+    5: [
+        "ALTER TABLE engine_events ADD COLUMN duration_ms INTEGER",
+    ],
 }
 
 

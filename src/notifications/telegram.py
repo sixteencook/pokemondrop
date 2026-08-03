@@ -46,15 +46,23 @@ def _short(value: Optional[str]) -> str:
     return collapsed[: VALUE_PREVIEW_LIMIT - 1] + "…"
 
 
+#: Libellés métier des alertes.
+#:
+#: Une notification répond toujours à « qu'est-ce qui a changé pour vous ? »,
+#: jamais à « quel texte HTML a changé ? ». Les événements décrivant la
+#: page ne sont plus produits : ils n'apparaissent donc plus ici.
 _CHANGE_LABELS: dict[ChangeType, str] = {
     ChangeType.PRODUCT_APPEARED: "🆕 Fiche produit en ligne",
+    ChangeType.PRODUCT_DELISTED: "⚪ Fiche retirée de la vente",
     ChangeType.PRICE_APPEARED: "💶 Prix affiché",
     ChangeType.PRICE_CHANGED: "💶 Prix modifié",
     ChangeType.PREORDER_OPENED: "🟢 PRÉCOMMANDE OUVERTE",
+    ChangeType.INVITATION_OPENED: "🎟️ INVITATION OUVERTE",
     ChangeType.BACK_IN_STOCK: "🟢 RETOUR EN STOCK",
-    ChangeType.BUTTON_CHANGED: "🔄 Bouton modifié",
-    ChangeType.STATUS_CHANGED: "🔄 Statut modifié",
-    ChangeType.PAGE_CHANGED: "🔄 Page modifiée",
+    ChangeType.WENT_OUT_OF_STOCK: "🔴 Rupture de stock",
+    ChangeType.SELLER_BECAME_OFFICIAL: "🏷️ Vendeur officiel de retour",
+    ChangeType.SELLER_LEFT_BUYBOX: "🏷️ Vendeur officiel absent de la Buy Box",
+    ChangeType.STATUS_CHANGED: "🔄 Disponibilité modifiée",
 }
 
 
@@ -186,22 +194,34 @@ class TelegramNotifier(BaseNotifier):
     # ------------------------------------------------------------------ #
 
     def _format(self, event: ChangeEvent, with_screenshot: bool = False) -> str:
+        merchant = event.product.site.capitalize()
         label = _CHANGE_LABELS.get(event.change_type, event.change_type.value)
+        if event.change_type is ChangeType.SELLER_BECAME_OFFICIAL:
+            label = f"🏷️ {merchant} devient vendeur"
+        elif event.change_type is ChangeType.SELLER_LEFT_BUYBOX:
+            label = f"🏷️ {merchant} quitte la Buy Box"
+
         lines = [
             "🚨 <b>ALERTE DROP</b>",
             "",
             f"<b>Produit :</b> {escape(event.product.name)}",
-            f"<b>Site :</b> {escape(event.product.site.capitalize())}",
+            f"<b>Site :</b> {escape(merchant)}",
             f"<b>Heure :</b> {datetime.now().strftime('%H:%M:%S')}",
             f"<b>Événement :</b> {escape(label)}",
         ]
         if event.old_value or event.new_value:
-            # Les libellés de boutons peuvent être longs : on tronque AVANT
-            # la mise en forme HTML, pour ne jamais couper une balise.
+            # Les valeurs décrivent l'état métier (« Précommander · 189,99 € »),
+            # jamais un libellé de bouton ni un hash. On tronque AVANT la mise
+            # en forme HTML, pour ne jamais couper une balise.
             lines.append(
                 f"<b>Changement :</b> {escape(_short(event.old_value))} → "
                 f"{escape(_short(event.new_value))}"
             )
+        offer = event.snapshot.offer
+        if offer is not None and offer.conclusive:
+            lines.append(f"<b>Action possible :</b> {escape(offer.label)}")
+            if offer.seller_name:
+                lines.append(f"<b>Vendeur :</b> {escape(offer.seller_name)}")
         if event.snapshot.price:
             lines.append(f"<b>Prix :</b> {escape(event.snapshot.price)}")
         lines.append(f"<b>URL :</b> {escape(event.product.url)}")

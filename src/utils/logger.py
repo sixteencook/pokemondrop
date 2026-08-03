@@ -92,8 +92,19 @@ def get_log_entries() -> list[LogEntry]:
     return _buffer.snapshot()
 
 
-def setup_logging(log_dir: Path, level: str = "INFO") -> None:
+#: Loggers passés en DEBUG lorsque le mode diagnostic des plugins est actif.
+PLUGIN_LOGGERS: tuple[str, ...] = ("monitors", "renderer", "engine")
+
+
+def setup_logging(
+    log_dir: Path, level: str = "INFO", plugin_debug: bool = False
+) -> None:
     """Initialise la sortie console, les fichiers de logs et le buffer API.
+
+    `plugin_debug` (variable `PLUGIN_DEBUG`) active le bloc de diagnostic
+    complet des plugins : URL, marketplace, pays, langue, bloc retenu,
+    sélecteur, action d'achat principale, état métier, hash métier et motifs
+    de rejet. Il part dans `logs/debug.log` sans inonder la console.
 
     Idempotent : les appels suivants (tests, CLI + serveur) sont ignorés.
     """
@@ -148,6 +159,21 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     errors_file.setFormatter(file_fmt)
     errors_file.setLevel(logging.ERROR)
     root.addHandler(errors_file)
+
+    # --- Diagnostic des plugins -------------------------------------------
+    # Volontairement dans son propre fichier : le bloc complet fait une
+    # vingtaine de lignes par vérification, il noierait les autres journaux.
+    if plugin_debug:
+        root.setLevel(logging.DEBUG)
+        for name in PLUGIN_LOGGERS:
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        debug_file = RotatingFileHandler(
+            log_dir / "debug.log", maxBytes=5_000_000, backupCount=3,
+            encoding="utf-8",
+        )
+        debug_file.setFormatter(file_fmt)
+        debug_file.setLevel(logging.DEBUG)
+        root.addHandler(debug_file)
 
 
 class MonitorLogger(logging.LoggerAdapter):

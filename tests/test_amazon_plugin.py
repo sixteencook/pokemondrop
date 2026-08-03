@@ -11,7 +11,6 @@ from plugins.amazon import AmazonState, canonical_url, extract_asin
 from plugins.amazon.discovery import AmazonDiscovery
 from plugins.amazon.identity import AmazonIdentityStrategy
 from plugins.amazon.monitor import AmazonMonitor
-from plugins.amazon.parser import analyse
 from src.discovery.contracts import DiscoveryContext
 from src.intelligence.identity import ProductIdentity
 from src.intelligence.keys import SearchKey

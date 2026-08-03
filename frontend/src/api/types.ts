@@ -371,3 +371,251 @@ export interface WsMessage<T = Record<string, unknown>> {
   payload: T;
   ts: string;
 }
+
+/* --- Observabilité (page Santé) ------------------------------------- */
+
+export interface EngineOverview {
+  window_hours: number;
+  engine_running: boolean;
+  plugins_active: number;
+  products_watched: number;
+  products_total: number;
+  offers_total: number;
+  canonical_products: number;
+  discoveries_today: number;
+  discoveries_pending: number;
+  alerts_today: number;
+  errors_today: number;
+  checks_today: number;
+  avg_response_ms: number | null;
+  avg_response_by_plugin: Record<string, number | null>;
+}
+
+export interface PluginHealth {
+  site: string;
+  display_name: string;
+  version: string | null;
+  score: number;
+  status: "healthy" | "degraded" | "unhealthy" | "observation";
+  penalties: Record<string, number>;
+  main_issue: string | null;
+  products_watched: number;
+  products_total: number;
+  last_check_at: string | null;
+  success_rate: number | null;
+  checks: number;
+  errors: number;
+  avg_response_ms: number | null;
+  avg_confidence: number | null;
+  unknown_states: number;
+  browser_checks: number;
+  http_403: number;
+  http_404: number;
+  http_429: number;
+  http_4xx: number;
+  http_5xx: number;
+  browser_renders: number;
+  browser_fallbacks: number;
+  captchas: number;
+  timeouts: number;
+  network_errors: number;
+  low_confidence: number;
+  locale_mismatch: number;
+  pages_missing: number;
+  last_error: string | null;
+  last_error_at: string | null;
+}
+
+export interface ProductEvent {
+  kind: string;
+  label: string;
+  severity: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface ProductHealth {
+  uuid: string;
+  name: string;
+  site: string;
+  url: string;
+  last_check_at: string | null;
+  last_availability: string | null;
+  last_alert_at: string | null;
+  last_alert_type: string | null;
+  last_screenshot: string | null;
+  last_evidence: string | null;
+  checks_window: number;
+  checks_total: number;
+  errors: number;
+  avg_response_ms: number | null;
+  avg_confidence: number | null;
+  unknown_states: number;
+  browser_checks: number;
+  browser_fallbacks: number;
+  score: number;
+  status: string;
+  main_issue: string | null;
+  confidence_history: { at: string; confidence: number }[];
+  last_error: string | null;
+  last_error_at: string | null;
+  recent_events: ProductEvent[];
+}
+
+export interface DiscoveryHealth {
+  found_today: number;
+  found_this_week: number;
+  imported: number;
+  pending: number;
+  ignored: number;
+  blocked: number;
+  last_discovery_at: string | null;
+  per_day: { day: string; total: number }[];
+  searches_total: number;
+  searches_found: number;
+  searches_empty: number;
+  searches_retrying: number;
+}
+
+export interface IntelligenceHealth {
+  canonical_products: number;
+  offers: number;
+  merged_automatically: number;
+  pending_validation: number;
+  rejected: number;
+  avg_confidence: number | null;
+  identifiers: Record<string, number>;
+}
+
+export interface Anomaly {
+  severity: "warning" | "error";
+  source: string;
+  title: string;
+  detail: string;
+}
+
+export interface EngineEvent {
+  id: number;
+  scope: string;
+  source: string;
+  kind: string;
+  label: string;
+  severity: string;
+  detail: string;
+  product_uuid: string | null;
+  created_at: string;
+}
+
+export interface PhaseTimings {
+  http_ms: number | null;
+  browser_ms: number | null;
+  screenshot_ms: number | null;
+  discovery_scan_ms: number | null;
+  intelligence_ms: number | null;
+}
+
+export interface IncidentStep {
+  label: string;
+  detail: string;
+  severity: string;
+  at: string;
+}
+
+export interface Incident {
+  source: string;
+  product_uuid: string | null;
+  started_at: string;
+  outcome: string;
+  steps: IncidentStep[];
+}
+
+export interface ScoreComponent {
+  name: string;
+  key: string;
+  score: number;
+  status: string;
+  weight: number;
+}
+
+export interface SystemScore {
+  score: number;
+  status: string;
+  components: ScoreComponent[];
+}
+
+export interface StoryEntry {
+  at: string;
+  site: string;
+  label: string;
+  detail: string;
+  origin: "monitoring" | "discovery" | "intelligence";
+}
+
+export interface PropagationStep {
+  site: string;
+  first_seen_at: string;
+  rank: number;
+  delay_hours: number;
+  url: string;
+  price: string | null;
+  availability: string | null;
+}
+
+export interface ProductMetrics {
+  merchants: number;
+  first_merchant: string | null;
+  first_seen_at: string | null;
+  last_merchant: string | null;
+  last_merchant_at: string | null;
+  changes: number;
+  notifications: number;
+  screenshots: number;
+  price_changes: number;
+  back_in_stock: number;
+  out_of_stock: number;
+  preorders: number;
+  invitations: number;
+}
+
+export interface StorySearchAttempt {
+  site: string;
+  key_kind: string;
+  key_value: string;
+  status: string;
+  attempts: number;
+  confidence: number;
+  reason: string;
+  found_url: string | null;
+  last_attempt_at: string | null;
+  next_retry_at: string | null;
+}
+
+export interface ProductStory {
+  uuid: string;
+  name: string;
+  brand: string | null;
+  timeline: StoryEntry[];
+  propagation: PropagationStep[];
+  metrics: ProductMetrics;
+  identity: Record<string, string>;
+  searches: StorySearchAttempt[];
+}
+
+export interface Diagnostics {
+  overview: EngineOverview;
+  system: SystemScore;
+  incidents: Incident[];
+  timings: PhaseTimings;
+  plugins: PluginHealth[];
+  discovery: DiscoveryHealth;
+  intelligence: IntelligenceHealth;
+  anomalies: Anomaly[];
+  history: EngineEvent[];
+  charts: {
+    checks_per_hour: ChecksPerHourPoint[];
+    incidents_per_hour: Record<string, number | string>[];
+    confidence_per_hour: { hour: string; avg_confidence: number }[];
+    alerts_per_day: AlertsPerDayPoint[];
+    discoveries_per_day: { day: string; total: number }[];
+  };
+}

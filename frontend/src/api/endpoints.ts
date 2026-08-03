@@ -10,6 +10,7 @@ import type {
   CheckNowResult,
   ChecksPerHourPoint,
   CrossSiteReport,
+  Diagnostics,
   Discovery,
   DiscoveryState,
   LogEntry,
@@ -21,6 +22,8 @@ import type {
   SearchAttempt,
   Page,
   Product,
+  ProductHealth,
+  ProductStory,
   ProductInput,
   Settings,
   SiteAvailabilityPoint,
@@ -68,6 +71,8 @@ export const catalogApi = {
     http.post<void>(`/catalog/suggestions/${id}/reject`),
   findOffers: (uuid: string) =>
     http.post<CrossSiteReport>(`/catalog/products/${uuid}/find-offers`),
+  story: (uuid: string) =>
+    http.get<ProductStory>(`/catalog/products/${uuid}/story`),
   identity: (uuid: string) =>
     http.get<ProductIdentity>(`/catalog/products/${uuid}/identity`),
   searchAttempts: (uuid: string) =>
@@ -131,4 +136,7 @@ export const settingsApi = {
 
 export const healthApi = {
   system: () => http.get<SystemHealth>("/health/system"),
+  diagnostics: () => http.get<Diagnostics>("/diagnostics"),
+  product: (uuid: string) =>
+    http.get<ProductHealth>(`/products/${uuid}/health`),
 };

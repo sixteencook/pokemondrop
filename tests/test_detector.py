@@ -36,10 +36,20 @@ def test_preorder_opened():
     old = snap(availability=Availability.UNAVAILABLE)
     new = snap(availability=Availability.PREORDER, buttons=["Précommander"])
     events = detect_changes(make_product(), old, new)
-    types = [e.change_type for e in events]
-    assert ChangeType.PREORDER_OPENED in types
-    # Le changement de bouton lié à la dispo n'est pas doublonné.
-    assert ChangeType.BUTTON_CHANGED not in types
+    assert [e.change_type for e in events] == [ChangeType.PREORDER_OPENED]
+
+
+def test_an_unknown_state_never_produces_an_event():
+    """Une lecture non concluante ne peut ni annoncer, ni effacer.
+
+    C'est la règle qui supprime l'oscillation « invitation → inconnu →
+    invitation » et ses deux alertes pour un produit immobile.
+    """
+    known = snap(availability=Availability.PREORDER)
+    unknown = snap(availability=Availability.UNKNOWN)
+
+    assert detect_changes(make_product(), known, unknown) == []
+    assert detect_changes(make_product(), unknown, known) == []
 
 
 def test_back_in_stock():
@@ -50,10 +60,18 @@ def test_back_in_stock():
 
 
 def test_product_page_appears():
-    old = ProductSnapshot(page_exists=False)
-    new = snap(availability=Availability.UNKNOWN)
+    old = ProductSnapshot(page_exists=False, availability=Availability.NOT_LISTED)
+    new = snap(availability=Availability.PREORDER)
     events = detect_changes(make_product(), old, new)
-    assert ChangeType.PRODUCT_APPEARED in [e.change_type for e in events]
+    # Un seul événement : la mise en ligne absorbe le changement d'état.
+    assert [e.change_type for e in events] == [ChangeType.PRODUCT_APPEARED]
+
+
+def test_product_page_disappears():
+    old = snap(availability=Availability.IN_STOCK)
+    new = ProductSnapshot(page_exists=False, availability=Availability.NOT_LISTED)
+    events = detect_changes(make_product(), old, new)
+    assert [e.change_type for e in events] == [ChangeType.PRODUCT_DELISTED]
 
 
 def test_price_appears_then_changes():
@@ -67,16 +85,15 @@ def test_price_appears_then_changes():
     assert [e.change_type for e in events] == [ChangeType.PRICE_CHANGED]
 
 
-def test_button_change_without_availability_change():
+def test_a_button_label_change_alone_produces_nothing():
+    """Le moteur ne surveille plus des boutons, mais un état métier."""
     old = snap(buttons=["M'alerter"])
     new = snap(buttons=["Prévenez-moi"])
-    events = detect_changes(make_product(), old, new)
-    assert [e.change_type for e in events] == [ChangeType.BUTTON_CHANGED]
+    assert detect_changes(make_product(), old, new) == []
 
 
-def test_page_hash_change_is_not_alert_worthy():
+def test_a_hash_change_alone_produces_nothing():
+    """Le hash ne déclenche plus rien : il ne sert qu'à l'archivage."""
     old = snap(content_hash="aaa")
     new = snap(content_hash="bbb")
-    events = detect_changes(make_product(), old, new)
-    assert [e.change_type for e in events] == [ChangeType.PAGE_CHANGED]
-    assert not events[0].is_alert_worthy
+    assert detect_changes(make_product(), old, new) == []

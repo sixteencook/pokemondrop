@@ -61,17 +61,61 @@ class SnapshotRow(Base):
 
 
 class CheckRow(Base):
-    """Une vérification effectuée (stats : checks/heure, temps de réponse…)."""
+    """Une vérification effectuée (stats : checks/heure, temps de réponse…).
+
+    Les quatre dernières colonnes portent l'observabilité. Elles sont
+    remplies par une écriture qui a lieu de toute façon : leur coût est
+    donc nul pour le cycle de surveillance, et elles suffisent à calculer
+    le taux de fallback navigateur, la distribution des statuts HTTP et
+    la tendance de la confiance d'analyse.
+    """
 
     __tablename__ = "checks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     product_uuid: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(10))  # "ok" | "error"
+    #: Disponibilité RÉELLEMENT observée par cette lecture — pas l'état
+    #: conservé par le moteur. « unknown » ici est une information de
+    #: santé, pas une régression.
     availability: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     response_time_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    fetch_source: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class EngineEventRow(Base):
+    """Événement technique du moteur — la matière de l'historique Santé.
+
+    N'est écrit que lorsqu'il se passe quelque chose de notable : refus
+    HTTP, bascule navigateur, interception, confiance insuffisante,
+    découverte, fusion. Un cycle nominal n'en produit aucun, ce qui garde
+    la table petite et les agrégations rapides.
+    """
+
+    __tablename__ = "engine_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: plugin | discovery | intelligence | engine
+    scope: Mapped[str] = mapped_column(String(20), index=True)
+    #: Site pour un plugin, nom du module sinon.
+    source: Mapped[str] = mapped_column(String(50), index=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    severity: Mapped[str] = mapped_column(String(10), default="info", index=True)
+    product_uuid: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    detail: Mapped[str] = mapped_column(Text, default="")
+    #: Durée de la phase mesurée, quand elle en a une (capture, balayage
+    #: Discovery, corrélation Intelligence). C'est ce qui permet de suivre
+    #: le temps moyen de chaque étage du moteur sans mesure dédiée.
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
 

@@ -21,10 +21,16 @@ journalise.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import ClassVar, Optional
 
-from src.models import ProductConfig, ProductSnapshot
+from src.models import (
+    CheckDiagnostics,
+    OfferState,
+    ProductConfig,
+    ProductSnapshot,
+)
 from src.monitors.base import DEFAULT_HEADERS, BaseMonitor, RequestPlan
 from src.utils.logger import get_logger
 
@@ -36,6 +42,29 @@ log = get_logger("monitors.amazon")
 #: Score minimal pour retenir un état. En dessous, l'analyse est jugée
 #: trop fragile et l'état devient UNKNOWN.
 DEFAULT_MIN_CONFIDENCE = 60
+
+#: États trahissant un site qui refuse de servir la page. Ils alimentent
+#: l'indicateur « blocage » de la page Santé.
+BLOCKING_STATES = frozenset({
+    AmazonState.INTERCEPTED, AmazonState.CAPTCHA, AmazonState.CLOUDFLARE,
+})
+
+
+def _blocked_reason(analysis: parser.PageAnalysis) -> Optional[str]:
+    """Raison, en clair, pour laquelle la page n'a pas permis de conclure.
+
+    Reprend telle quelle la décision déjà calculée par le parser : aucune
+    analyse supplémentaire, donc aucun coût.
+    """
+    if analysis.state in BLOCKING_STATES:
+        return analysis.label
+    if analysis.locale_blocked:
+        return "contexte de livraison incorrect"
+    if analysis.downgraded:
+        return "confiance insuffisante"
+    if analysis.state is AmazonState.UNKNOWN:
+        return "aucune action d'achat identifiée"
+    return None
 
 
 class AmazonMonitor(BaseMonitor):
@@ -101,8 +130,9 @@ class AmazonMonitor(BaseMonitor):
         )
         asin = parser.extract_asin(product.url)
         preference = marketplace.preference_for(product.url)
+        offer = parser.build_offer(analysis, asin)
 
-        self._log_analysis(product, analysis, preference, asin, len(html))
+        self._log_analysis(product, analysis, offer, preference, asin, len(html))
 
         details = analysis.buy_box.as_details()
         details.update(analysis.locale.as_details())
@@ -118,6 +148,11 @@ class AmazonMonitor(BaseMonitor):
             "origine_decision": analysis.evidence.origin or "—",
             "invitation_dom": "oui" if analysis.invitation.present else "non",
             "invitation_motif": analysis.invitation.reason,
+            "action_principale": offer.label,
+            "action_libelle": analysis.action.label or "—",
+            "type_vendeur": offer.seller_type.value,
+            "hash_metier": offer.business_hash(),
+            "controles_ignores": analysis.action.describe_ignored(),
         })
 
         retained = analysis.retained_scope
@@ -137,13 +172,23 @@ class AmazonMonitor(BaseMonitor):
                 f"{analysis.locale.expected_country} attendu"
             )
 
+        diagnostics = CheckDiagnostics(
+            confidence=analysis.confidence.score,
+            blocked=analysis.state in BLOCKING_STATES,
+            blocked_reason=_blocked_reason(analysis),
+        )
+
         return ProductSnapshot(
-            availability=analysis.availability,
-            price=analysis.buy_box.price,
+            availability=offer.availability,
+            price=offer.price,
+            # Libellés conservés pour le diagnostic seulement : ils
+            # n'entrent ni dans le hash, ni dans la détection.
             buttons=list(analysis.buttons),
             status_text=analysis.label,
             page_exists=analysis.state is not AmazonState.ERROR,
-            content_hash=analysis.decision_hash(),
+            content_hash=offer.business_hash(),
+            offer=offer,
+            diagnostics=diagnostics,
             details=details,
             raw_html=html,
         )
@@ -156,92 +201,105 @@ class AmazonMonitor(BaseMonitor):
         self,
         product: ProductConfig,
         analysis: parser.PageAnalysis,
+        offer: OfferState,
         preference: marketplace.LocalePreference,
         asin: Optional[str],
         html_length: int,
     ) -> None:
-        """Trace complète : toute décision doit pouvoir être reproduite.
+        """Résumé métier systématique, puis bloc DEBUG complet si demandé.
 
-        Journalisée au niveau CHECK : invisible en console par défaut, mais
-        présente dans `logs/` et dans la page Logs du dashboard, là où l'on
-        va chercher pourquoi un statut est inattendu.
+        Le résumé part au niveau CHECK : invisible en console, mais présent
+        dans `logs/` et dans la page Logs du dashboard. Le bloc détaillé
+        part au niveau DEBUG, activé par `PLUGIN_DEBUG=true`.
         """
         box = analysis.buy_box
         locale = analysis.locale
 
         log.check(
-            "Amazon — %s | état=%s (%s) | confiance=%d [%s]\n"
-            "         titre=%s | asin=%s | prix=%s %s | vendeur=%s | "
-            "expédié=%s | buy box=%s\n"
-            "         boutons retenus=%s\n"
-            "         boutons ignorés=%s\n"
-            "         décision=%s | html=%.1f Ko | hash=%s",
+            "Amazon — %s | %s | action=%s | confiance=%d | vendeur=%s (%s) | "
+            "prix=%s | livraison=%s | hash=%s",
             product.name,
-            analysis.state.value, analysis.label,
-            analysis.confidence.score, analysis.confidence.detail,
-            (analysis.title or "—")[:80], asin or "—",
-            box.price or "—", box.currency or "",
-            box.seller or "—", box.shipped_by or "—",
-            "oui" if box.has_buy_box else "non",
-            analysis.buttons or "—",
-            analysis.ignored_buttons or "—",
-            analysis.reason,
-            html_length / 1024,
-            analysis.decision_hash(),
+            analysis.label,
+            offer.label,
+            analysis.confidence.score,
+            box.seller or "—", offer.seller_type.value,
+            offer.price or "—",
+            locale.delivery_country or "non détecté",
+            offer.business_hash(),
         )
 
-        # Bloc de localisation : c'est lui qui explique une page « autre »
-        # que celle vue dans un navigateur.
-        log.check(
-            "Amazon — %s | LOCALISATION\n"
-            "         demandée      : %s\n"
-            "         URL appelée   : %s\n"
-            "         marketplace   : %s\n"
-            "         langue        : %s (%s)\n"
-            "         livraison     : %s\n"
-            "         conforme      : %s",
-            product.name,
-            preference.summary,
-            preference.url,
-            locale.marketplace_domain,
-            locale.language or "non détectée",
-            locale.language_source or "—",
-            locale.delivery_summary,
-            "oui" if locale.delivers_to_expected_country else
-            f"NON — {locale.expected_country} attendu",
-        )
+        if analysis.locale_blocked:
+            log.check(
+                "Amazon — %s : conclusion ÉCARTÉE. %s",
+                product.name, analysis.reason,
+            )
+        elif analysis.state in INCONCLUSIVE_STATES:
+            log.check(
+                "Amazon — %s : page non concluante (%s). Le dernier état "
+                "métier connu sera conservé, aucune alerte ne sera émise.",
+                product.name, analysis.label,
+            )
 
-        # Bloc de décision : quel bloc d'achat, quel sélecteur, et ce
-        # qu'est devenu le bouton d'invitation.
+        if not log.isEnabledFor(logging.DEBUG):
+            return
+
         candidates = "\n".join(
             f"           - {candidate.describe()}"
             for candidate in analysis.scope_candidates
         ) or "           - aucun bloc d'achat identifié"
 
-        log.check(
-            "Amazon — %s | DÉCISION\n"
-            "         périmètre     : %s\n"
-            "         sélecteur     : %s\n"
-            "         extrait       : %s\n"
-            "         invitation    : %s\n"
-            "         blocs d'achat :\n%s",
+        ignored = "\n".join(
+            f"           - {control.label} [{control.selector}] : {control.reason}"
+            for control in analysis.action.ignored[:12]
+        ) or "           - aucun"
+
+        log.debug(
+            "════ AMAZON — %s ════\n"
+            "  URL surveillée   : %s\n"
+            "  URL canonique    : %s\n"
+            "  URL appelée      : %s\n"
+            "  Marketplace      : %s\n"
+            "  Pays livraison   : %s\n"
+            "  Langue           : %s (%s)\n"
+            "  Localisation     : %s\n"
+            "  ── décision ──\n"
+            "  Bloc retenu      : %s (%s)\n"
+            "  Sélecteur        : %s\n"
+            "  Action principale: %s — « %s » via %s\n"
+            "  État métier      : %s (natif : %s)\n"
+            "  Disponibilité    : %s\n"
+            "  Confiance        : %d [%s]\n"
+            "  Prix             : %s %s\n"
+            "  Vendeur          : %s (%s) · expédié par %s\n"
+            "  Buy box          : %s\n"
+            "  Hash métier      : %s\n"
+            "  ASIN             : %s | HTML : %.1f Ko\n"
+            "  Invitation       : %s\n"
+            "  ── blocs d'achat examinés ──\n%s\n"
+            "  ── contrôles ignorés (%d sur %d examinés) ──\n%s",
             product.name,
+            product.url,
+            parser.canonical_url(product.url),
+            preference.url,
+            locale.marketplace_domain,
+            locale.delivery_summary,
+            locale.language or "non détectée", locale.language_source or "—",
+            preference.summary,
             analysis.scope,
+            analysis.retained_scope.identifier if analysis.retained_scope else "—",
             analysis.evidence.describe(),
-            analysis.evidence.excerpt or "—",
+            offer.label, analysis.action.label or "—",
+            analysis.action.origin or "—",
+            offer.action.value, offer.native_state,
+            offer.availability.value,
+            analysis.confidence.score, analysis.confidence.detail,
+            offer.price or "—", offer.currency or "",
+            box.seller or "—", offer.seller_type.value, box.shipped_by or "—",
+            "oui" if offer.has_buy_box else "non",
+            offer.business_hash(),
+            asin or "—", html_length / 1024,
             analysis.invitation.describe(),
             candidates,
+            len(analysis.action.ignored), analysis.action.examined,
+            ignored,
         )
-
-        if analysis.locale_blocked:
-            log.check(
-                "Amazon — %s : conclusion négative ÉCARTÉE. %s",
-                product.name, analysis.reason,
-            )
-
-        if analysis.state in INCONCLUSIVE_STATES:
-            log.check(
-                "Amazon — %s : page non concluante (%s). L'état précédent "
-                "sera conservé, aucune alerte ne sera émise.",
-                product.name, analysis.label,
-            )

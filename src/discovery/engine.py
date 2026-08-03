@@ -21,12 +21,13 @@ sites, et toute la surveillance existante, continuent normalement.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from src.core.events import Event, EventBus, EventType
 from src.discovery.config import ApprovalMode, DiscoverySettings
-from src.discovery.contracts import DiscoveredProduct, DiscoveryContext, ScanResult
+from src.discovery.contracts import DiscoveredProduct, ScanResult
 from src.discovery.fingerprint import compute, product_slug
 from src.discovery.loader import DiscoveryRegistry
 from src.discovery.rules import RuleMatch
@@ -51,6 +52,8 @@ class ScanReport:
     excluded: int = 0
     gone: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Durée du balayage complet — suivie sur la page Santé.
+    duration_ms: int = 0
 
     def summary(self) -> str:
         return (
@@ -142,6 +145,7 @@ class DiscoveryEngine:
             return self._last_report or ScanReport()
 
         async with self._scanning:
+            started = time.perf_counter()
             report = ScanReport()
             for plugin in self._registry.all():
                 site_config = self._settings.for_site(plugin.site_name)
@@ -156,11 +160,13 @@ class DiscoveryEngine:
                     log.error("Découverte — échec du site %s : %s",
                               plugin.site_name, exc)
 
+            report.duration_ms = int((time.perf_counter() - started) * 1000)
             self._last_report = report
             log.ok("Balayage terminé — %s", report.summary())
             await self._bus.publish(Event(
                 EventType.DISCOVERY_SCAN_COMPLETED,
-                {"report": report, "summary": report.summary()},
+                {"report": report, "summary": report.summary(),
+                 "duration_ms": report.duration_ms},
             ))
             return report
 

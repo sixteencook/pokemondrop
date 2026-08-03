@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.intelligence.identity import IdentityField, ProductIdentity
+from src.intelligence.identity import ProductIdentity
 from src.intelligence.keys import KEY_PRIORITIES, build_search_keys
 from src.intelligence.strategies import (
     IdentityContext,

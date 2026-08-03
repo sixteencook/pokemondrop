@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func, select, update
@@ -191,6 +191,27 @@ class DiscoveryRepository:
                 )
             )
             await session.commit()
+
+    async def count_since(self, hours: int) -> int:
+        """Fiches repérées pour la première fois sur la fenêtre."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        async with self._sessions() as session:
+            return int((await session.execute(
+                select(func.count(DiscoveryRow.fingerprint))
+                .where(DiscoveryRow.first_seen_at >= cutoff)
+            )).scalar_one())
+
+    async def per_day(self, days: int = 14) -> list[dict[str, object]]:
+        """Découvertes par jour — graphique de la page Santé."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        bucket = func.strftime("%Y-%m-%d", DiscoveryRow.first_seen_at)
+        async with self._sessions() as session:
+            rows = (await session.execute(
+                select(bucket, func.count(DiscoveryRow.fingerprint))
+                .where(DiscoveryRow.first_seen_at >= cutoff)
+                .group_by(bucket).order_by(bucket)
+            )).all()
+        return [{"day": day, "total": int(total)} for day, total in rows]
 
     async def last_discovery_at(self) -> Optional[datetime]:
         async with self._sessions() as session:

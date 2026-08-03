@@ -28,13 +28,19 @@ from src.repositories import (
     CatalogRepository,
     CheckRepository,
     DiscoveryRepository,
+    EngineEventRepository,
     OfferRepository,
     ProductRepository,
     SnapshotRepository,
     TimelineRepository,
 )
 from src.repositories.search_attempts import SearchAttemptRepository
-from src.services import ScreenshotService, StatsService
+from src.services import (
+    HealthService,
+    ProductStoryService,
+    ScreenshotService,
+    StatsService,
+)
 from src.web.ws import WsHub
 
 
@@ -57,11 +63,17 @@ class AppContext:
     catalog: CatalogRepository
     offers: OfferRepository
     attempts: SearchAttemptRepository
+    engine_events: EngineEventRepository
     stats: StatsService
     screenshots: ScreenshotService
     discovery_settings: DiscoverySettings
     intelligence_settings: IntelligenceSettings
     base_dir: Path
+    #: Service d'observabilité (page Santé) — posé juste après la
+    #: construction du contexte, comme `stats`.
+    health: Optional[HealthService] = None
+    #: Histoire complète d'un produit canonique (timeline fusionnée).
+    story: Optional[ProductStoryService] = None
     discovery_engine: Optional[DiscoveryEngine] = None
     discovery_task: Optional[object] = None
     retry_task: Optional[object] = None

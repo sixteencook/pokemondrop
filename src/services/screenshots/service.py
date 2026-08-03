@@ -224,7 +224,7 @@ class ScreenshotService:
                         relative, result.size_bytes / 1024, result.duration_ms,
                         "fermés" if result.cookie_banner_closed else "non détectés",
                     )
-                    await self._publish_result(job, relative)
+                    await self._publish_result(job, relative, result.duration_ms)
                     return
                 last_error = result.error or "capture vide"
             except BrowserUnavailable as exc:
@@ -261,7 +261,12 @@ class ScreenshotService:
         except Exception:  # noqa: BLE001 — site sans plugin
             return ()
 
-    async def _publish_result(self, job: CaptureJob, relative: Optional[Path]) -> None:
+    async def _publish_result(
+        self,
+        job: CaptureJob,
+        relative: Optional[Path],
+        duration_ms: Optional[int] = None,
+    ) -> None:
         """Republie sur le bus pour CHAQUE alerte partageant cette capture.
 
         La base, le WebSocket et Telegram prennent alors le relais. Le chemin
@@ -276,6 +281,8 @@ class ScreenshotService:
             payload = dict(member.payload)
             payload.pop(PENDING_FLAG, None)
             payload["screenshot_path"] = path
+            if duration_ms is not None:
+                payload["duration_ms"] = duration_ms
             await self._bus.publish(Event(EventType.SCREENSHOT_COMPLETED, payload))
 
 

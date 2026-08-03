@@ -7,7 +7,7 @@ import uuid as uuid_lib
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.schema import (
@@ -295,6 +295,59 @@ class CatalogRepository:
                 )
                 for row in rows
             ]
+
+    async def identifier_coverage(self) -> dict[str, int]:
+        """Combien de produits canoniques portent chaque identifiant fort.
+
+        C'est l'indicateur de qualité du Product Intelligence : sans
+        identifiant fort, un rapprochement ne peut jamais dépasser le seuil
+        de fusion automatique.
+        """
+        columns = {
+            "ean": CatalogProductRow.ean,
+            "upc": CatalogProductRow.upc,
+            "isbn": CatalogProductRow.isbn,
+            "mpn": CatalogProductRow.mpn,
+            "asin": CatalogProductRow.asin,
+            "model_number": CatalogProductRow.model_number,
+        }
+        async with self._sessions() as session:
+            row = (await session.execute(
+                select(
+                    func.count(),
+                    *(func.sum(case((column.is_not(None), 1), else_=0))
+                      for column in columns.values()),
+                ).select_from(CatalogProductRow)
+            )).one()
+
+        total, *counts = row
+        coverage = {"total": int(total or 0)}
+        coverage.update({
+            name: int(value or 0) for name, value in zip(columns, counts)
+        })
+        return coverage
+
+    async def suggestion_stats(self) -> dict[str, object]:
+        """Rapprochements : validés, en attente, et confiance moyenne."""
+        async with self._sessions() as session:
+            rows = (await session.execute(
+                select(
+                    MatchSuggestionRow.status,
+                    func.count(),
+                    func.avg(MatchSuggestionRow.score),
+                ).group_by(MatchSuggestionRow.status)
+            )).all()
+
+        by_status = {status: int(total) for status, total, _ in rows}
+        scores = [(total, avg) for _, total, avg in rows if avg is not None]
+        weighted = sum(total * avg for total, avg in scores)
+        count = sum(total for total, _ in scores)
+        return {
+            "pending": by_status.get("pending", 0),
+            "accepted": by_status.get("accepted", 0),
+            "rejected": by_status.get("rejected", 0),
+            "avg_score": round(weighted / count, 1) if count else None,
+        }
 
     async def set_suggestion_status(self, suggestion_id: int, status: str) -> bool:
         async with self._sessions() as session:

@@ -18,7 +18,7 @@ et espaces uniformisés — « Pokémon » et « pokemon » sont équivalents.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from src.discovery.contracts import DiscoveredProduct

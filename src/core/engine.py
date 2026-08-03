@@ -28,7 +28,7 @@ from typing import Awaitable, Callable
 from pathlib import Path
 
 from src.core import evidence
-from src.core.detector import detect_changes
+from src.core.detector import detect_changes, event_signature
 from src.core.events import Event, EventBus, EventType
 from src.models import GlobalSettings, ProductConfig, ProductSnapshot
 from src.monitors import FetchError, MonitorRegistry, UnknownSiteError
@@ -202,12 +202,22 @@ class MonitorEngine:
         )
 
     async def _confirm(
-        self, product: ProductConfig, first: ProductSnapshot
+        self,
+        product: ProductConfig,
+        previous: Optional[ProductSnapshot],
+        expected: list,
     ) -> tuple[bool, Optional[ProductSnapshot]]:
-        """Relit la page et vérifie que la décision est reproductible.
+        """Relit la page et vérifie que le MÊME changement métier s'y lit.
+
+        La confirmation ne compare pas deux pages : elle rejoue la
+        détection sur la seconde lecture et compare les événements
+        obtenus. Deux pages peuvent différer (promotion, ordre d'un bloc,
+        vendeur qui tourne) tout en décrivant le même changement — et
+        inversement, deux pages identiques au regard d'un hash grossier
+        peuvent cacher des états différents.
 
         Retourne (confirmé, seconde analyse). Une lecture impossible n'est
-        pas une confirmation : dans le doute, on ne notifie pas.
+        jamais une confirmation : dans le doute, on ne notifie pas.
         """
         if self._settings.confirmation_delay:
             await asyncio.sleep(self._settings.confirmation_delay)
@@ -222,15 +232,18 @@ class MonitorEngine:
             )
             return False, None
 
-        same = (
-            second.availability is first.availability
-            and second.price == first.price
-            and second.content_hash == first.content_hash
+        confirmed = (
+            second.conclusive
+            and event_signature(detect_changes(product, previous, second))
+            == event_signature(expected)
         )
-        if same:
-            log.check("Changement confirmé par une seconde analyse : %s",
-                      product.name)
-        return same, second
+        if confirmed:
+            log.check(
+                "Changement confirmé par une seconde lecture : %s (%s)",
+                product.name,
+                ", ".join(change.change_type.value for change in expected),
+            )
+        return confirmed, second
 
     async def _report_unstable(
         self,
@@ -295,12 +308,38 @@ class MonitorEngine:
         previous = await self._snapshots.load(key)
         events = detect_changes(product, previous, snapshot)
 
+        # --- Mémoire métier -----------------------------------------------
+        # Une lecture non concluante (interception, confiance insuffisante,
+        # contexte de localisation incorrect) ne prouve rien. Elle ne peut
+        # donc ni alerter, ni effacer le dernier état métier connu : sans
+        # cette règle, l'état oscille « invitation → inconnu → invitation »
+        # et produit deux alertes pour un produit parfaitement immobile.
+        if not snapshot.conclusive:
+            # `snapshot` reste l'état AFFICHÉ (le dernier connu), mais
+            # `observed` porte ce que la lecture a réellement vu. C'est
+            # cette distinction qui permet à la page Santé de compter les
+            # lectures indéterminées sans faire clignoter le dashboard.
+            await self._bus.publish(Event(EventType.CHECK_COMPLETED, {
+                "product": product,
+                "snapshot": previous or snapshot,
+                "observed": snapshot,
+                "response_time_ms": response_time_ms,
+                "changes": 0,
+            }))
+            log.check(
+                "Lecture non concluante (%s) : %s. Dernier état métier "
+                "conservé (%s) — aucune alerte, rien de réécrit.",
+                product.name,
+                snapshot.status_text or "aucune action d'achat identifiée",
+                previous.availability.value if previous else "aucun",
+            )
+            return previous
+
         # --- Confirmation d'un changement ---------------------------------
         # Un changement n'est jamais notifié sur une seule lecture : on
-        # relit la page pour écarter les pages temporairement différentes
-        # (bannière, test A/B, rendu partiel, état qui oscille).
+        # relit la page et on vérifie que le MÊME changement métier s'y lit.
         if events and previous is not None and self._settings.confirm_changes:
-            confirmed, second = await self._confirm(product, snapshot)
+            confirmed, second = await self._confirm(product, previous, events)
             if not confirmed:
                 await self._report_unstable(product, previous, snapshot, second)
                 return previous          # l'état précédent est conservé
@@ -312,6 +351,7 @@ class MonitorEngine:
                 {
                     "product": product,
                     "snapshot": snapshot,
+                    "observed": snapshot,
                     "response_time_ms": response_time_ms,
                     "changes": len(events),
                 },

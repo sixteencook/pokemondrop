@@ -140,6 +140,47 @@ class AlertRepository:
                 select(func.count(AlertRow.id))
             )).scalar_one())
 
+    async def count_for_products(self, product_uuids: list[str]) -> int:
+        """Notifications envoyées pour un ensemble de produits surveillés."""
+        if not product_uuids:
+            return 0
+        async with self._sessions() as session:
+            return int((await session.execute(
+                select(func.count(AlertRow.id)).where(
+                    AlertRow.product_uuid.in_(product_uuids),
+                    AlertRow.notified.is_(True),
+                )
+            )).scalar_one())
+
+    async def count_screenshots(self, product_uuids: list[str]) -> int:
+        """Captures effectivement attachées à une alerte."""
+        if not product_uuids:
+            return 0
+        async with self._sessions() as session:
+            return int((await session.execute(
+                select(func.count(AlertRow.id)).where(
+                    AlertRow.product_uuid.in_(product_uuids),
+                    AlertRow.screenshot_path.is_not(None),
+                )
+            )).scalar_one())
+
+    async def count_since(self, hours: int) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        async with self._sessions() as session:
+            return int((await session.execute(
+                select(func.count(AlertRow.id)).where(AlertRow.created_at >= cutoff)
+            )).scalar_one())
+
+    async def last_for_product(self, product_uuid: str) -> Optional[AlertRecord]:
+        """Dernière alerte réellement notifiée pour un produit."""
+        async with self._sessions() as session:
+            row = (await session.execute(
+                select(AlertRow)
+                .where(AlertRow.product_uuid == product_uuid, AlertRow.notified.is_(True))
+                .order_by(AlertRow.created_at.desc()).limit(1)
+            )).scalar_one_or_none()
+            return _to_domain(row) if row else None
+
     async def last_created_at(self) -> Optional[datetime]:
         async with self._sessions() as session:
             return (await session.execute(

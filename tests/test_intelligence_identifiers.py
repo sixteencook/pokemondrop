@@ -1,6 +1,5 @@
 """Extraction et normalisation des identifiants produit."""
 
-import pytest
 
 from src.intelligence.identifiers import (
     extract,

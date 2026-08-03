@@ -81,6 +81,9 @@ class AppSettings:
     screenshots: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     browser_fallback: bool = True
     browser_fallback_max_concurrent: int = 2
+    #: Diagnostic complet des plugins dans logs/debug.log (PLUGIN_DEBUG).
+    #: À activer pour comprendre une décision en moins de 30 secondes.
+    plugin_debug: bool = False
 
     @property
     def telegram_configured(self) -> bool:
@@ -129,4 +132,6 @@ class AppSettings:
             browser_fallback_max_concurrent=max(
                 1, int(os.getenv("BROWSER_FALLBACK_MAX_CONCURRENT", "2"))
             ),
+            plugin_debug=os.getenv("PLUGIN_DEBUG", "false").strip().lower()
+            in ("1", "true", "yes", "on"),
         )

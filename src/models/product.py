@@ -9,7 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+# `diagnostics` ne dépend d'aucun autre module du projet : import direct.
+from src.models.diagnostics import CheckDiagnostics
+
+if TYPE_CHECKING:  # évite un import circulaire : offer.py importe Availability
+    from src.models.offer import OfferState
 
 
 class Availability(str, Enum):
@@ -34,16 +40,38 @@ class Priority(str, Enum):
 
 
 class ChangeType(str, Enum):
-    """Type de changement détecté entre deux snapshots."""
+    """Type de changement métier détecté entre deux états d'offre.
+
+    Chaque valeur répond à « qu'est-ce qui a changé **pour l'acheteur** ? ».
+    Aucune ne décrit le HTML : le détecteur ne compare plus ni libellés de
+    boutons, ni texte de page.
+    """
 
     PRODUCT_APPEARED = "product_appeared"
+    PRODUCT_DELISTED = "product_delisted"
     PRICE_APPEARED = "price_appeared"
     PRICE_CHANGED = "price_changed"
     PREORDER_OPENED = "preorder_opened"
+    INVITATION_OPENED = "invitation_opened"
     BACK_IN_STOCK = "back_in_stock"
-    BUTTON_CHANGED = "button_changed"
+    WENT_OUT_OF_STOCK = "went_out_of_stock"
+    SELLER_BECAME_OFFICIAL = "seller_became_official"
+    SELLER_LEFT_BUYBOX = "seller_left_buybox"
     STATUS_CHANGED = "status_changed"
+
+    # --- Hérités, PLUS JAMAIS ÉMIS --------------------------------------
+    # Conservés uniquement pour relire les lignes déjà écrites en base et
+    # les afficher dans le dashboard. Ils décrivaient le HTML, pas le
+    # produit : c'est exactement la source de bruit que la version 1.0
+    # supprime.
+    BUTTON_CHANGED = "button_changed"
     PAGE_CHANGED = "page_changed"
+
+
+#: Types que le détecteur n'émet plus. Un test verrouille cette promesse.
+RETIRED_CHANGE_TYPES: frozenset[ChangeType] = frozenset({
+    ChangeType.BUTTON_CHANGED, ChangeType.PAGE_CHANGED,
+})
 
 
 @dataclass(frozen=True)
@@ -116,10 +144,21 @@ class ProductSnapshot:
 
     availability: Availability = Availability.UNKNOWN
     price: Optional[str] = None
+    #: Libellés relevés sur la page. **Diagnostic uniquement** : ils
+    #: n'entrent ni dans le hash, ni dans la détection de changement, ni
+    #: dans les notifications. Le moteur ne surveille pas des boutons.
     buttons: list[str] = field(default_factory=list)
     status_text: Optional[str] = None
     page_exists: bool = False
     content_hash: Optional[str] = None
+    #: État métier de l'offre — c'est LUI que le moteur compare. Absent
+    #: seulement pour une page inexistante ou un plugin qui n'a rien pu
+    #: conclure.
+    offer: Optional["OfferState"] = None
+    #: Métadonnées techniques de la vérification (voie de récupération,
+    #: statut HTTP, confiance). Alimente la page Santé ; n'entre jamais
+    #: dans le hash ni dans la détection de changement.
+    diagnostics: CheckDiagnostics = field(default_factory=CheckDiagnostics)
     checked_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -134,6 +173,18 @@ class ProductSnapshot:
         default=None, repr=False, compare=False
     )
 
+    @property
+    def conclusive(self) -> bool:
+        """La lecture a-t-elle abouti à un état métier exploitable ?
+
+        Une lecture non concluante (page d'interception, confiance
+        insuffisante, contexte de localisation incorrect) ne doit produire
+        AUCUN événement et ne doit pas effacer le dernier état connu :
+        c'est ce qui empêche l'oscillation « invitation → inconnu →
+        invitation ».
+        """
+        return self.availability is not Availability.UNKNOWN
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "availability": self.availability.value,
@@ -142,12 +193,17 @@ class ProductSnapshot:
             "status_text": self.status_text,
             "page_exists": self.page_exists,
             "content_hash": self.content_hash,
+            "offer": self.offer.to_dict() if self.offer else None,
+            "diagnostics": self.diagnostics.to_dict(),
             "checked_at": self.checked_at,
             "details": self.details,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProductSnapshot":
+        from src.models.offer import OfferState
+
+        raw_offer = data.get("offer")
         return cls(
             availability=Availability(data.get("availability", "unknown")),
             price=data.get("price"),
@@ -155,6 +211,8 @@ class ProductSnapshot:
             status_text=data.get("status_text"),
             page_exists=bool(data.get("page_exists", False)),
             content_hash=data.get("content_hash"),
+            offer=OfferState.from_dict(raw_offer) if raw_offer else None,
+            diagnostics=CheckDiagnostics.from_dict(data.get("diagnostics")),
             checked_at=data.get("checked_at", ""),
             details=dict(data.get("details") or {}),
         )
@@ -172,9 +230,13 @@ class ChangeEvent:
 
     @property
     def is_alert_worthy(self) -> bool:
-        """Les changements de hash seuls ne déclenchent pas d'alerte Telegram
-        (trop bruyants : bannières, dates, contenus dynamiques)."""
-        return self.change_type is not ChangeType.PAGE_CHANGED
+        """Tout événement métier mérite d'être notifié.
+
+        Le détecteur n'en produit plus aucun qui décrive le HTML : il n'y a
+        donc plus rien à filtrer ici. Les types hérités restent écartés au
+        cas où une ligne ancienne serait rejouée.
+        """
+        return self.change_type not in RETIRED_CHANGE_TYPES
 
     @property
     def is_important(self) -> bool:
@@ -189,8 +251,13 @@ class ChangeEvent:
 #: Changements considérés comme importants (voir ChangeEvent.is_important).
 IMPORTANT_CHANGE_TYPES: frozenset[ChangeType] = frozenset({
     ChangeType.PRODUCT_APPEARED,
+    ChangeType.PRODUCT_DELISTED,
     ChangeType.PRICE_APPEARED,
     ChangeType.PREORDER_OPENED,
+    ChangeType.INVITATION_OPENED,
     ChangeType.BACK_IN_STOCK,
+    ChangeType.WENT_OUT_OF_STOCK,
+    ChangeType.SELLER_BECAME_OFFICIAL,
+    ChangeType.SELLER_LEFT_BUYBOX,
     ChangeType.STATUS_CHANGED,
 })

@@ -44,6 +44,7 @@ from src.repositories import (
     CatalogRepository,
     CheckRepository,
     DiscoveryRepository,
+    EngineEventRepository,
     OfferRepository,
     ProductRepository,
     SnapshotRepository,
@@ -51,6 +52,8 @@ from src.repositories import (
 )
 from src.services import (
     EventRecorder,
+    HealthService,
+    ProductStoryService,
     PlaywrightRenderer,
     ScreenshotService,
     StatsService,
@@ -64,6 +67,8 @@ from src.web.ws import EventBroadcaster, WsHub, WsLogHandler, register_websocket
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CHECKS_RETENTION_DAYS = 30
+#: Les incidents techniques ne servent qu'au diagnostic récent.
+EVENTS_RETENTION_DAYS = 14
 
 log = get_logger("web")
 
@@ -121,6 +126,7 @@ async def _build_context(
     catalog = CatalogRepository(db.session_factory)
     offers = OfferRepository(db.session_factory)
     attempts = SearchAttemptRepository(db.session_factory)
+    engine_events = EngineEventRepository(db.session_factory)
 
     if yaml_products:
         await import_products_from_yaml(products, yaml_products)
@@ -130,6 +136,8 @@ async def _build_context(
     if purged:
         log.ok("Historique : %d check(s) de plus de %d jours purgés.",
                purged, CHECKS_RETENTION_DAYS)
+    # L'historique technique n'a d'intérêt que récent.
+    await engine_events.purge_older_than(EVENTS_RETENTION_DAYS)
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(defaults.request_timeout))
 
@@ -155,7 +163,7 @@ async def _build_context(
     #   3) le WebSocket      → le dashboard n'attend ni Playwright ni Telegram
     #   4) les notifications → envoient, ou patientent si une capture est en cours
     bus = EventBus()
-    EventRecorder(checks, timeline, alerts).attach_to(bus)
+    EventRecorder(checks, timeline, alerts, engine_events).attach_to(bus)
 
     screenshots = ScreenshotService(
         settings.screenshots, bus, registry, pool=browser_pool
@@ -218,6 +226,7 @@ async def _build_context(
         products=products, snapshots=snapshots, checks=checks,
         timeline=timeline, alerts=alerts, discoveries=discoveries,
         catalog=catalog, offers=offers, attempts=attempts,
+        engine_events=engine_events,
         stats=None,  # type: ignore[arg-type] — posé juste en dessous
         screenshots=screenshots,
         discovery_settings=discovery_settings,
@@ -230,6 +239,11 @@ async def _build_context(
     )
     ctx.stats = StatsService(products, checks, alerts, registry, engine,
                              ctx.started_at)
+    ctx.health = HealthService(products, checks, alerts, discoveries,
+                               catalog, offers, engine_events, registry,
+                               engine, attempts)
+    ctx.story = ProductStoryService(catalog, offers, timeline, alerts,
+                                    discoveries, engine_events, attempts)
     return ctx
 
 
@@ -266,7 +280,8 @@ def create_app(
     """Crée l'application. `settings`/`config_path`/`run_engine` sont
     surchargés par les tests."""
     app_settings = settings or AppSettings.load(BASE_DIR / ".env")
-    setup_logging(app_settings.log_dir, app_settings.log_level)
+    setup_logging(app_settings.log_dir, app_settings.log_level,
+                  app_settings.plugin_debug)
 
     _log_boot_summary(app_settings)
 

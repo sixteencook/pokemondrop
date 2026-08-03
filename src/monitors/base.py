@@ -39,7 +39,13 @@ from typing import ClassVar, Optional
 
 import httpx
 
-from src.models import Availability, ProductConfig, ProductSnapshot
+from src.models import (
+    Availability,
+    CheckDiagnostics,
+    FetchSource,
+    ProductConfig,
+    ProductSnapshot,
+)
 from src.monitors.renderer import HtmlRenderer, RenderError
 from src.utils.logger import get_logger
 
@@ -88,6 +94,47 @@ class FetchResult:
     status_code: int
     html: Optional[str]
     source: str
+    #: Statut par lequel le site a d'abord REFUSÉ de servir la page, quand
+    #: le navigateur a ensuite réussi. Sans lui, un 403 suivi d'un rendu
+    #: Chromium se lirait comme un 200 : le signal le plus important pour
+    #: repérer un site qui commence à bloquer serait perdu.
+    blocked_status: Optional[int] = None
+
+
+def _diagnostics_for(
+    result: FetchResult, browser_fallback: bool = False
+) -> CheckDiagnostics:
+    """Traduit une récupération en métadonnées d'observabilité."""
+    try:
+        source = FetchSource(result.source)
+    except ValueError:
+        source = FetchSource.UNKNOWN
+    return CheckDiagnostics(
+        fetch_source=source,
+        # Le refus initial prime : c'est lui qui décrit le comportement du
+        # site, pas le 200 obtenu ensuite par le navigateur.
+        http_status=result.blocked_status or result.status_code,
+        browser_fallback=browser_fallback or result.blocked_status is not None,
+    )
+
+
+def _merge_fetch_diagnostics(
+    snapshot: ProductSnapshot,
+    result: FetchResult,
+    browser_fallback: bool = False,
+) -> None:
+    """Complète les diagnostics du plugin par ceux de la récupération.
+
+    Le plugin renseigne ce qu'il sait de l'analyse (confiance, motif de
+    blocage) ; le cœur y ajoute ce que seul lui connaît (voie empruntée,
+    statut HTTP). Ni l'un ni l'autre n'a besoin de connaître l'autre.
+    """
+    fetched = _diagnostics_for(result, browser_fallback)
+    snapshot.diagnostics.fetch_source = fetched.fetch_source
+    snapshot.diagnostics.http_status = fetched.http_status
+    snapshot.diagnostics.browser_fallback = (
+        snapshot.diagnostics.browser_fallback or fetched.browser_fallback
+    )
 
 
 @dataclass(frozen=True)
@@ -154,9 +201,17 @@ class BaseMonitor(ABC):
         plan = self.prepare_request(product.url)
         result = await self._fetch(plan)
         if result.status_code == 404 or not result.html:
-            return ProductSnapshot(page_exists=False)
+            # NOT_LISTED, pas UNKNOWN : une fiche absente est une
+            # information métier certaine, pas une lecture ratée. C'est ce
+            # qui permet d'annoncer sa mise en ligne, et sa disparition.
+            return ProductSnapshot(
+                page_exists=False,
+                availability=Availability.NOT_LISTED,
+                diagnostics=_diagnostics_for(result),
+            )
 
         snapshot = self.parse(result.html, product)
+        _merge_fetch_diagnostics(snapshot, result)
         if snapshot.raw_html is None:
             # Le HTML reste disponible pour archiver la preuve d'une
             # décision importante ; il n'est jamais persisté en base.
@@ -177,6 +232,13 @@ class BaseMonitor(ABC):
             rendered = await self._render(plan)
             if rendered is not None:
                 snapshot = self.parse(rendered, product)
+                # Bascule APRÈS une analyse infructueuse : c'est le signal
+                # le plus révélateur d'un site qui commence à résister.
+                _merge_fetch_diagnostics(
+                    snapshot,
+                    replace(result, source="browser"),
+                    browser_fallback=True,
+                )
                 if snapshot.availability is not Availability.UNKNOWN:
                     log.ok(
                         "Rendu navigateur concluant pour %s : statut « %s ».",
@@ -225,7 +287,9 @@ class BaseMonitor(ABC):
                 raise FetchError(
                     f"HTTP {response.status_code} puis échec du rendu navigateur : {url}"
                 )
-            return FetchResult(200, html, "browser")
+            return FetchResult(
+                200, html, "browser", blocked_status=response.status_code
+            )
 
         if response.status_code >= 400:
             raise FetchError(f"HTTP {response.status_code} : {url}")

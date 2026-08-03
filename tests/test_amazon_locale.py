@@ -183,8 +183,13 @@ def test_unknown_destination_does_not_paralyse_the_monitoring(monitor, product):
     assert snapshot.availability is Availability.UNAVAILABLE
 
 
-def test_a_positive_state_survives_a_foreign_destination(monitor, product):
-    """Une offre visible malgré une mauvaise destination reste une offre."""
+def test_no_state_survives_a_foreign_destination(monitor, product):
+    """Hors contexte France, AUCUN état n'est retenu — pas même positif.
+
+    L'offre proposée à une autre destination n'est pas celle que voit
+    l'utilisateur : annoncer une invitation ouverte serait aussi faux
+    qu'annoncer une rupture.
+    """
     html = page(
         '<div id="desktop_buybox">'
         '<div id="availability"><span>Demande d\'invitation</span></div></div>',
@@ -192,8 +197,10 @@ def test_a_positive_state_survives_a_foreign_destination(monitor, product):
     )
     snapshot = monitor.parse(html, product)
 
-    assert snapshot.details["etat_amazon"] == AmazonState.INVITATION.value
-    assert snapshot.availability is Availability.PREORDER
+    assert snapshot.details["etat_amazon"] == AmazonState.UNKNOWN.value
+    assert snapshot.availability is Availability.UNKNOWN
+    assert not snapshot.conclusive
+    assert "US" in snapshot.details["declasse"]
 
 
 def test_the_guard_can_be_switched_off(product):
@@ -214,7 +221,7 @@ def test_decisive_selector_is_the_availability_block(monitor, product):
     snapshot = monitor.parse(page(OUT_OF_STOCK_BLOCK, glow="France"), product)
 
     assert snapshot.details["selecteur_decisif"] == "#availability"
-    assert snapshot.details["origine_decision"] == "disponibilité"
+    assert snapshot.details["origine_decision"] == "bloc disponibilité"
 
 
 def test_decisive_selector_is_the_buy_button(monitor, product):
@@ -227,7 +234,7 @@ def test_decisive_selector_is_the_buy_button(monitor, product):
     snapshot = monitor.parse(html, product)
 
     assert snapshot.details["selecteur_decisif"] == "#add-to-cart-button"
-    assert snapshot.details["origine_decision"] == "boutons"
+    assert snapshot.details["origine_decision"] == "contrôle d'achat"
 
 
 def test_decisive_selector_points_at_the_exact_element(monitor, product):
@@ -240,7 +247,7 @@ def test_decisive_selector_points_at_the_exact_element(monitor, product):
     html = page(
         '<div id="desktop_buybox">'
         '<div id="corePrice_feature_div"><span class="a-offscreen">19,99 €</span></div>'
-        '<div id="availability"><span>Disponible sur invitation</span></div>'
+        '<div id="availability"><span>Rejoignez la file d\'attente</span></div>'
         '<span id="hdp-invite-button-announce">Demander une invitation</span>'
         '</div>',
         glow="France",
@@ -248,8 +255,8 @@ def test_decisive_selector_points_at_the_exact_element(monitor, product):
     analysis = analyse(html, url=URL)
 
     assert analysis.state is AmazonState.INVITATION
-    assert analysis.evidence.selector == "span#hdp-invite-button-announce"
-    assert analysis.evidence.origin == "périmètre"
+    assert analysis.evidence.selector == "#hdp-invite-button-announce"
+    assert analysis.evidence.origin == "contrôle d'achat"
     assert analysis.evidence.excerpt == "Demander une invitation"
 
 
@@ -368,6 +375,7 @@ def test_invitation_in_an_aria_label_is_located(monitor, product):
     assert analysis.invitation.used
     assert analysis.state is AmazonState.INVITATION
     assert analysis.evidence.selector == "button#invite"
+    assert analysis.evidence.excerpt == "Demander une invitation"
 
 
 # --------------------------------------------------------------------- #

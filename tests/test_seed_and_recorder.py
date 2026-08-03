@@ -86,15 +86,32 @@ async def test_recorder_persists_change_and_alert(tmp_path):
 
 
 async def test_recorder_labels_rupture(tmp_path):
-    """STATUS_CHANGED vers « unavailable » doit s'afficher « Rupture de stock »."""
+    """La timeline parle métier : « Rupture de stock », pas un code technique."""
     db, _, timeline, _, bus = await _make_recorder_env(tmp_path)
     product = make_product(uuid="u1")
     snap = ProductSnapshot(availability=Availability.UNAVAILABLE, page_exists=True)
-    change = ChangeEvent(product=product, change_type=ChangeType.STATUS_CHANGED,
+    change = ChangeEvent(product=product, change_type=ChangeType.WENT_OUT_OF_STOCK,
                          old_value="in_stock", new_value="unavailable", snapshot=snap)
 
     await bus.publish(Event(EventType.CHANGE_DETECTED,
                             {"product": product, "change": change, "snapshot": snap}))
     entries = await timeline.for_product("u1")
     assert entries[0].label == "Rupture de stock"
+    await db.dispose()
+
+
+async def test_recorder_names_the_merchant_on_seller_events(tmp_path):
+    """« Amazon devient vendeur » se lit sans traduction."""
+    db, _, timeline, _, bus = await _make_recorder_env(tmp_path)
+    product = make_product(site="amazon", uuid="u1")
+    snap = ProductSnapshot(availability=Availability.IN_STOCK, page_exists=True)
+    change = ChangeEvent(
+        product=product, change_type=ChangeType.SELLER_BECAME_OFFICIAL,
+        old_value="Boutique Tierce", new_value="Amazon.fr", snapshot=snap,
+    )
+
+    await bus.publish(Event(EventType.CHANGE_DETECTED,
+                            {"product": product, "change": change, "snapshot": snap}))
+    entries = await timeline.for_product("u1")
+    assert entries[0].label == "Amazon devient vendeur"
     await db.dispose()

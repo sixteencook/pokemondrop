@@ -24,7 +24,7 @@ sans jamais toucher au cœur du projet.
 
 from __future__ import annotations
 
-import hashlib
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -32,7 +32,15 @@ from typing import ClassVar, Iterable
 
 from bs4 import BeautifulSoup
 
-from src.models import Availability, ProductConfig, ProductSnapshot
+from src.models import (
+    Availability,
+    CheckDiagnostics,
+    OfferState,
+    ProductConfig,
+    ProductSnapshot,
+    PurchaseAction,
+    SellerType,
+)
 from src.monitors.base import BaseMonitor
 from src.utils.logger import get_logger
 
@@ -89,12 +97,33 @@ DEFAULT_BUTTON_SELECTORS = (
 #     product_scope_selectors = "#product-content"
 DEFAULT_PRODUCT_SCOPE_SELECTORS = ""
 
-#: Zones à retirer du périmètre : recommandations, ventes croisées, pied de page.
+#: Zones à retirer du périmètre AVANT toute mesure.
+#:
+#: Tout ce qui change sans que le produit change doit disparaître ici :
+#: c'est la première ligne de défense contre les fausses alertes. Un
+#: bandeau cookies qui apparaît, une newsletter qui tourne, un carrousel
+#: qui pivote ou un encart publicitaire ne doivent jamais atteindre le
+#: hash métier ni la résolution d'action.
 DEFAULT_NOISE_SELECTORS = (
+    # Recommandations et ventes croisées
     '[class*="carousel"], [class*="slider"], [class*="recommend"], '
     '[class*="cross-sell"], [class*="crosssell"], [class*="upsell"], '
     '[class*="similar"], [class*="related"], [class*="also-like"], '
-    '[class*="suggestion"], footer, nav, header'
+    '[class*="suggestion"], [class*="you-may"], [class*="bought-together"], '
+    # Structure de page
+    'footer, nav, header, [role="navigation"], [class*="breadcrumb"], '
+    # Bandeaux de consentement
+    '[class*="cookie"], [id*="cookie"], [id*="onetrust"], [class*="onetrust"], '
+    '[id*="didomi"], [class*="didomi"], [id*="consent"], [class*="consent"], '
+    # Newsletter et captation
+    '[class*="newsletter"], [id*="newsletter"], [class*="subscribe"], '
+    # Publicité et contenus sponsorisés
+    '[class*="advert"], [id*="advert"], [class*="publicite"], '
+    '[class*="sponsor"], [id*="sponsor"], [class*="promo-banner"], '
+    # Modales et surcouches
+    '[class*="modal"], [class*="popin"], [class*="popup"], [role="dialog"], '
+    # Avis et questions
+    '[class*="review"], [id*="review"], [class*="rating"], [class*="avis"]'
 )
 
 #: Plafond de libellés retenus : au-delà, le hash deviendrait instable et
@@ -146,6 +175,8 @@ class ParseDiagnostics:
     matched_keywords: list[str] = field(default_factory=list)
     interstitial: str | None = None
     scope: str = ""
+    #: Ce qui a tranché : mot-clé et provenance, en clair.
+    decided_by: str = ""
 
     def summary(self) -> str:
         sample = ", ".join(self.candidate_buttons[:DIAGNOSTIC_SAMPLE]) or "aucun"
@@ -202,27 +233,51 @@ class GenericHtmlMonitor(BaseMonitor):
         buttons = self._filter_action_buttons(candidates)[:MAX_ACTION_BUTTONS]
         diag.matched_buttons = list(buttons)
 
-        buttons_text = normalise(" | ".join(buttons))
-        availability = self._classify(buttons_text, page_text, diag)
+        # UNE action d'achat principale : le reste des libellés relevés ne
+        # sert qu'au diagnostic.
+        action, decided_by = self._resolve_action(buttons, page_text, diag)
         price = self._extract_price(scope) or self._extract_price(soup)
         status_text = self._extract_status(page_text)
+
+        offer = OfferState(
+            action=action,
+            native_state=action.value,
+            has_buy_box=action in (PurchaseAction.ADD_TO_CART,
+                                   PurchaseAction.BUY_NOW,
+                                   PurchaseAction.PREORDER),
+            # Un marchand classique vend son propre stock : il n'y a pas de
+            # place de marché, donc rien à surveiller côté vendeur. Laisser
+            # UNKNOWN garantit qu'aucun événement de vendeur ne partira.
+            seller_type=SellerType.UNKNOWN,
+            price=price,
+            currency="EUR" if price else None,
+        )
 
         # Le soupçon de page d'attente n'a de sens QUE si l'analyse est restée
         # inconclusive : une page correctement classée n'était pas un mur
         # anti-robot, même si elle est courte.
-        if availability is Availability.UNKNOWN:
+        if not offer.conclusive:
             diag.interstitial = self._detect_interstitial(html, page_text, diag.title)
             status_text = diag.interstitial or status_text
 
-        self._log_diagnostics(product, availability, price, diag)
+        diag.decided_by = decided_by
+        self._log_diagnostics(product, offer, diag)
 
         return ProductSnapshot(
-            availability=availability,
+            availability=offer.availability,
             price=price,
-            buttons=buttons,
+            buttons=buttons,          # diagnostic uniquement
             status_text=status_text,
             page_exists=True,
-            content_hash=self._hash_significant_content(buttons, price, availability),
+            content_hash=offer.business_hash(),
+            offer=offer,
+            diagnostics=CheckDiagnostics(
+                blocked=diag.interstitial is not None,
+                blocked_reason=diag.interstitial or (
+                    None if offer.conclusive
+                    else "aucune action d'achat identifiée"
+                ),
+            ),
         )
 
     # ------------------------------------------------------------------ #
@@ -232,16 +287,43 @@ class GenericHtmlMonitor(BaseMonitor):
     def _log_diagnostics(
         self,
         product: ProductConfig,
-        availability: Availability,
-        price: str | None,
+        offer: "OfferState",
         diag: ParseDiagnostics,
     ) -> None:
-        """Trace systématique (niveau CHECK : fichiers de logs + dashboard)."""
+        """Résumé métier au niveau CHECK, détail complet au niveau DEBUG."""
+        availability = offer.availability
         log.check(
-            "Analyse %s — %s : %s → statut=%s, prix=%s",
-            self.site_name, product.name, diag.summary(),
-            availability.value, price or "—",
+            "%s — %s | action=%s | %s | prix=%s | hash=%s",
+            self.display_name or self.site_name, product.name,
+            offer.label, diag.decided_by or "—",
+            offer.price or "—", offer.business_hash(),
         )
+
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "════ %s — %s ════\n"
+                "  URL              : %s\n"
+                "  Bloc retenu      : %s\n"
+                "  Action principale: %s (%s)\n"
+                "  Décidée par      : %s\n"
+                "  État métier      : %s\n"
+                "  Prix             : %s\n"
+                "  Hash métier      : %s\n"
+                "  Libellés retenus : %s\n"
+                "  Libellés écartés : %d candidats non porteurs de mot-clé\n"
+                "  Diagnostic       : %s",
+                self.display_name or self.site_name, product.name,
+                product.url,
+                diag.scope or "—",
+                offer.label, offer.action.value,
+                diag.decided_by or "—",
+                availability.value,
+                offer.price or "—",
+                offer.business_hash(),
+                diag.matched_buttons or "—",
+                max(0, len(diag.candidate_buttons) - len(diag.matched_buttons)),
+                diag.summary(),
+            )
 
         if diag.interstitial:
             log.error(
@@ -404,35 +486,61 @@ class GenericHtmlMonitor(BaseMonitor):
                 return keyword
         return None
 
-    def _classify(
-        self, buttons_text: str, page_text: str, diag: ParseDiagnostics
-    ) -> Availability:
-        """Priorité : précommande > panier > indisponible > inconnu."""
-        matched = [kw for kw in self._norm_preorder if kw in buttons_text]
-        if matched:
-            diag.matched_keywords = [f"{kw} (bouton)" for kw in matched]
-            return Availability.PREORDER
+    def _resolve_action(
+        self, buttons: list[str], page_text: str, diag: ParseDiagnostics
+    ) -> tuple[PurchaseAction, str]:
+        """L'unique action d'achat proposée par la fiche.
 
-        matched = [kw for kw in self._norm_cart if kw in buttons_text]
-        if matched:
-            diag.matched_keywords = [f"{kw} (bouton)" for kw in matched]
-            return Availability.IN_STOCK
+        Priorité : précommande > panier > indisponibilité (bouton) >
+        indisponibilité (texte de la page).
 
-        matched = [kw for kw in self._norm_unavailable if kw in buttons_text]
-        if matched:
-            diag.matched_keywords = [f"{kw} (bouton)" for kw in matched]
-            return Availability.UNAVAILABLE
+        Une **contradiction** dans les boutons — un « Ajouter au panier »
+        ET une mention d'indisponibilité côte à côte — ne conclut rien.
+        C'est le cas typique d'un bouton résiduel laissé sur une fiche en
+        rupture : conclure « disponible » produirait la pire des fausses
+        alertes, un faux retour en stock.
+        """
+        buttons_text = normalise(" | ".join(buttons))
+
+        purchase = (
+            [(kw, PurchaseAction.PREORDER) for kw in self._norm_preorder
+             if kw in buttons_text]
+            + [(kw, PurchaseAction.ADD_TO_CART) for kw in self._norm_cart
+               if kw in buttons_text]
+        )
+        blocked = [kw for kw in self._norm_unavailable if kw in buttons_text]
+
+        if purchase and blocked:
+            diag.matched_keywords = [
+                f"{purchase[0][0]} (bouton)", f"{blocked[0]} (bouton)",
+            ]
+            return PurchaseAction.NONE, (
+                f"contradiction : « {purchase[0][0]} » et « {blocked[0]} » "
+                f"sur la même fiche"
+            )
+
+        if purchase:
+            keyword, action = purchase[0]
+            diag.matched_keywords = [f"{keyword} (bouton)"]
+            return action, f"« {keyword} » (bouton)"
+
+        if blocked:
+            diag.matched_keywords = [f"{blocked[0]} (bouton)"]
+            return self._unavailable_action(blocked[0]), f"« {blocked[0]} » (bouton)"
 
         matched = [kw for kw in self._norm_unavailable if kw in page_text]
         if matched:
-            diag.matched_keywords = [f"{kw} (page)" for kw in matched]
-            return Availability.UNAVAILABLE
+            diag.matched_keywords = [f"{matched[0]} (page)" ]
+            return self._unavailable_action(matched[0]), f"« {matched[0]} » (page)"
 
-        return Availability.UNKNOWN
+        return PurchaseAction.NONE, "aucun mot-clé d'achat ni d'indisponibilité"
 
-    def _hash_significant_content(
-        self, buttons: list[str], price: str | None, availability: Availability
-    ) -> str:
-        """Hash des seuls éléments significatifs (pas du HTML brut, trop volatil)."""
-        payload = "|".join([availability.value, price or "", *sorted(buttons)])
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    @staticmethod
+    def _unavailable_action(keyword: str) -> PurchaseAction:
+        """Nuance l'indisponibilité : alerte de retour ou rupture sèche."""
+        if any(marker in keyword for marker in
+               ("alerter", "prevenir", "prevenez", "alertez", "notify")):
+            return PurchaseAction.NOTIFY_ME
+        if "bientot" in keyword or "coming soon" in keyword:
+            return PurchaseAction.COMING_SOON
+        return PurchaseAction.CURRENTLY_UNAVAILABLE

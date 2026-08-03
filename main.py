@@ -42,6 +42,7 @@ from src.repositories import (
     CatalogRepository,
     CheckRepository,
     DiscoveryRepository,
+    EngineEventRepository,
     OfferRepository,
     ProductRepository,
     SnapshotRepository,
@@ -61,6 +62,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 #: Rétention de l'historique des checks (la table grossit vite).
 CHECKS_RETENTION_DAYS = 30
+#: Les incidents techniques ne servent qu'au diagnostic récent.
+EVENTS_RETENTION_DAYS = 14
 
 log = get_logger("main")
 
@@ -85,7 +88,7 @@ async def run() -> int:
     args = parse_args()
 
     settings = AppSettings.load(BASE_DIR / ".env")
-    setup_logging(settings.log_dir, settings.log_level)
+    setup_logging(settings.log_dir, settings.log_level, settings.plugin_debug)
 
     try:
         defaults, yaml_products = load_config(args.config)
@@ -115,6 +118,7 @@ async def run() -> int:
         checks_repo = CheckRepository(db.session_factory)
         timeline_repo = TimelineRepository(db.session_factory)
         alerts_repo = AlertRepository(db.session_factory)
+        events_repo = EngineEventRepository(db.session_factory)
 
         # Migration progressive : seed YAML puis reprise de l'ancien état JSON.
         await import_products_from_yaml(products_repo, yaml_products)
@@ -125,6 +129,8 @@ async def run() -> int:
         if purged:
             log.ok("Historique : %d check(s) de plus de %d jours purgés.",
                    purged, CHECKS_RETENTION_DAYS)
+        # L'historique technique n'a d'intérêt que récent.
+        await events_repo.purge_older_than(EVENTS_RETENTION_DAYS)
 
         # --- Event bus et abonnés -----------------------------------------
         # L'ordre d'abonnement compte : base → captures → notifications.
@@ -140,7 +146,8 @@ async def run() -> int:
         )
         registry = create_registry(client, renderer)
 
-        recorder = EventRecorder(checks_repo, timeline_repo, alerts_repo)
+        recorder = EventRecorder(checks_repo, timeline_repo, alerts_repo,
+                                 events_repo)
         recorder.attach_to(bus)
 
         screenshots = ScreenshotService(

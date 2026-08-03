@@ -63,9 +63,15 @@ export const EVENT_TYPE_META: Record<string, { tone: Tone }> = {
   price_appeared: { tone: "info" },
   price_changed: { tone: "info" },
   preorder_opened: { tone: "success" },
+  invitation_opened: { tone: "success" },
   back_in_stock: { tone: "success" },
-  button_changed: { tone: "warning" },
+  went_out_of_stock: { tone: "danger" },
+  product_delisted: { tone: "neutral" },
+  seller_became_official: { tone: "accent" },
+  seller_left_buybox: { tone: "warning" },
   status_changed: { tone: "warning" },
+  // Événements hérités : plus jamais produits, conservés pour l'historique.
+  button_changed: { tone: "neutral" },
   page_changed: { tone: "neutral" },
 };
 

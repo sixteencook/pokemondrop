@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.schema import TimelineRow
@@ -66,6 +66,38 @@ class TimelineRepository:
                 .limit(limit)
             )).scalars().all()
             return [_to_domain(row) for row in rows]
+
+    async def for_products(
+        self, product_uuids: list[str], limit: int = 400
+    ) -> list[TimelineEntry]:
+        """Timeline de PLUSIEURS produits surveillés, en une requête.
+
+        C'est la base de la timeline d'un produit canonique : un même
+        produit peut être suivi chez plusieurs marchands, chacun avec sa
+        propre entrée dans `products`.
+        """
+        if not product_uuids:
+            return []
+        async with self._sessions() as session:
+            rows = (await session.execute(
+                select(TimelineRow)
+                .where(TimelineRow.product_uuid.in_(product_uuids))
+                .order_by(TimelineRow.created_at.desc(), TimelineRow.id.desc())
+                .limit(limit)
+            )).scalars().all()
+            return [_to_domain(row) for row in rows]
+
+    async def count_by_type(self, product_uuids: list[str]) -> dict[str, int]:
+        """Nombre d'événements par nature — base des métriques métier."""
+        if not product_uuids:
+            return {}
+        async with self._sessions() as session:
+            rows = (await session.execute(
+                select(TimelineRow.event_type, func.count(TimelineRow.id))
+                .where(TimelineRow.product_uuid.in_(product_uuids))
+                .group_by(TimelineRow.event_type)
+            )).all()
+        return {event_type: int(total) for event_type, total in rows}
 
     async def list_page(
         self,

@@ -34,6 +34,7 @@ import {
 } from "@/components/ui";
 import { OfferTable } from "@/components/domain/OfferTable";
 import { ProductIdentityPanel } from "@/components/domain/ProductIdentityPanel";
+import { ProductStoryPanel } from "@/components/domain/ProductStoryPanel";
 import { formatTimeAgo } from "@/lib/format";
 import { ApiError } from "@/api/client";
 import { useWsEvent } from "@/ws/WsProvider";
@@ -268,6 +269,9 @@ export default function CatalogPage() {
                       </div>
                       <OfferTable offers={product.offers}
                                   bestSite={product.best_offer_site} />
+                      <div className="mt-3 border-t border-border pt-3">
+                        <ProductStoryPanel productUuid={product.uuid} />
+                      </div>
                       <div className="mt-2 flex justify-end">
                         <Button size="sm" variant="secondary" icon={<Radar size={13} />}
                                 loading={findOffers.isPending}
